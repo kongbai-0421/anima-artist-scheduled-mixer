@@ -539,6 +539,8 @@ def _apply_template_ui(name, target, base_rows, hires_rows):
             gr.update(),
             gr.update(),
             gr.update(),
+            gr.update(),
+            gr.update(),
             "No template selected.",
         )
     base_tpl = tpl.get("base_rows") or []

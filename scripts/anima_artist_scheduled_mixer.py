@@ -158,8 +158,7 @@ LANG = {
         "hires_independent": "高分辨率修复使用独立画师串；关闭时继承底图设置",
         "row_count": "画师行数",
         "hr_row_count": "高分画师行数",
-        "base_shift": "底图偏移（Shift）",
-        "hires_shift": "高分偏移（Shift）",
+        "shift_runtime_hint": "阶段/自动偏移读取生成参数区当前 Shift；生成时会再次读取实际底图/高分 Shift。",
         "artist_table": "画师设置",
         "global_strength": "全局画师强度",
         "optimization": "优化预设",
@@ -177,7 +176,7 @@ LANG = {
         "delete_template": "删除模板",
         "apply_target": "模板应用目标",
         "apply_template": "应用模板",
-        "normalize_rows": "应用阶段/偏移预设",
+        "normalize_rows": "刷新阶段预设",
         "help": "说明",
         "status": "状态",
         "empty_template_name": "模板名称为空。",
@@ -205,8 +204,7 @@ LANG = {
         "hires_independent": "Use independent Hires. fix artist chain; disabled = inherit base settings",
         "row_count": "Artist rows",
         "hr_row_count": "Hires artist rows",
-        "base_shift": "Base Shift",
-        "hires_shift": "Hires Shift",
+        "shift_runtime_hint": "Stage/Auto Shift reads the current Shift from the generation panel; sampling reads the actual Base/Hires Shift again.",
         "artist_table": "Artist settings",
         "global_strength": "Global artist strength",
         "optimization": "Optimization preset",
@@ -224,7 +222,7 @@ LANG = {
         "delete_template": "Delete template",
         "apply_target": "Apply target",
         "apply_template": "Apply template",
-        "normalize_rows": "Apply stage/Shift presets",
+        "normalize_rows": "Refresh stage presets",
         "help": "Guide",
         "status": "Status",
         "empty_template_name": "Template name is empty.",
@@ -264,7 +262,7 @@ HELP_EN = """
 
 `Weight` controls this artist's relative and absolute contribution. `Blocks` accepts `0-27`, `0,3,5-12`, or negative indices such as `-1`. `Start/End/Peak` are denoise progress values from 0 to 1. `Curve` shapes the row strength inside the window.
 
-`Stage + Auto Shift` can rewrite timing like the Anima LoRA Stage Scheduler. It always uses the Base/Hires Shift value above the table: Composition is early, Character is middle, Style is late; larger Shift values move windows slightly later. Turn off Auto Shift to edit Start/End/Peak manually.
+`Stage + Auto Shift` can rewrite timing like the Anima LoRA Stage Scheduler. It reads the current Shift from the Forge generation panel: Composition is early, Character is middle, Style is late; larger Shift values move windows slightly later. Turn off Auto Shift to edit Start/End/Peak manually.
 
 **Strength**
 
@@ -284,7 +282,7 @@ HELP_ZH = """
 
 `权重` 控制该画师的相对比例，也会在总权重低于 1 时降低实际介入。`层数` 支持 `0-27`、`0,3,5-12`，也支持 `-1` 这种倒数索引。`开始/结束/峰值` 是 0 到 1 的去噪进度，`曲线` 控制窗口内强度变化。
 
-`阶段 + 自动偏移` 会像 Anima LoRA 阶段插件一样重写时间，并且完全使用表格上方的底图/高分偏移（Shift）：构图靠前，人物居中，画风靠后；偏移值越大窗口会略向后移动。关闭自动偏移后可以手动编辑开始、结束和峰值。
+`阶段 + 自动偏移` 会像 Anima LoRA 阶段插件一样重写时间，并且直接读取 Forge 生成参数区当前 Shift：构图靠前，人物居中，画风靠后；偏移值越大窗口会略向后移动。关闭自动偏移后可以手动编辑开始、结束和峰值。
 
 **强度**
 
@@ -485,6 +483,76 @@ def _active_rows_from_components(count, shift, optimization, *values, display=Fa
     rows = _rows_from_components(*values)
     count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(count, len(rows) or 1))))
     return _normalize_rows(rows, count, shift, optimization, display=display)
+
+
+def _runtime_shift_from_processing(p, fallback=3.0):
+    if getattr(p, "is_hr_pass", False):
+        return _clamp(_to_float(getattr(p, "hr_distilled_cfg", None), fallback), 1.0, 24.0)
+    return _clamp(_to_float(getattr(p, "distilled_cfg_scale", None), fallback), 1.0, 24.0)
+
+
+def _shift_sync_script(base_shift_id, hires_shift_id, is_img2img=False):
+    source_ids = (
+        [["img2img_distilled_cfg_scale", base_shift_id], ["img2img_distilled_cfg_scale", hires_shift_id]]
+        if is_img2img
+        else [["txt2img_distilled_cfg_scale", base_shift_id], ["txt2img_hr_distilled_cfg", hires_shift_id]]
+    )
+    return f"""
+<script>
+(function() {{
+    const sourceIds = {json.dumps(source_ids)};
+
+    function inputOf(id) {{
+        const root = document.getElementById(id);
+        return root ? root.querySelector("input, textarea") : null;
+    }}
+
+    function setHidden(hiddenId, value) {{
+        const input = inputOf(hiddenId);
+        if (!input || value === undefined || value === null || input.value === String(value)) {{
+            return;
+        }}
+        input.value = value;
+        input.dispatchEvent(new Event("input", {{bubbles: true}}));
+        input.dispatchEvent(new Event("change", {{bubbles: true}}));
+    }}
+
+    function syncOne(sourceId, hiddenId) {{
+        const source = inputOf(sourceId);
+        if (!source) {{
+            return false;
+        }}
+        setHidden(hiddenId, source.value);
+        if (source.dataset.animaArtistMixerShiftSync === "1") {{
+            return true;
+        }}
+        source.dataset.animaArtistMixerShiftSync = "1";
+        const sync = function() {{ setHidden(hiddenId, source.value); }};
+        source.addEventListener("input", sync);
+        source.addEventListener("change", sync);
+        return true;
+    }}
+
+    function syncAll() {{
+        let found = false;
+        for (const pair of sourceIds) {{
+            found = syncOne(pair[0], pair[1]) || found;
+        }}
+        return found;
+    }}
+
+    if (!syncAll()) {{
+        let tries = 0;
+        const timer = window.setInterval(function() {{
+            tries += 1;
+            if (syncAll() || tries > 40) {{
+                window.clearInterval(timer);
+            }}
+        }}, 500);
+    }}
+}})();
+</script>
+"""
 
 
 def _create_artist_row_controls(prefix, lang, defaults, elem_id_func):
@@ -801,8 +869,6 @@ def _save_template_record(name, row_key, rows, row_count, shift, global_strength
     data[name] = {
         row_key: _normalize_rows(rows, row_count, shift, optimization_key, display=False),
         "hires_independent": row_key == "hires_rows",
-        "base_shift": shift if row_key == "base_rows" else 3.0,
-        "hires_shift": shift if row_key == "hires_rows" else 3.0,
         "global_strength": _to_float(global_strength, 0.7),
         "optimization": optimization_key,
         "combine_mode": combine_key,
@@ -900,23 +966,21 @@ def _apply_template_ui(name, target, base_row_count, hires_row_count, current_ba
     if not isinstance(tpl, dict):
         return no_selection
     optimization_key = _option_key("optimization", tpl.get("optimization"), OPT_BALANCE)
-    tpl_base_shift = _to_float(tpl.get("base_shift", 3.0), 3.0)
-    tpl_hires_shift = _to_float(tpl.get("hires_shift", tpl_base_shift), tpl_base_shift)
+    base_shift = _to_float(current_base_shift, _to_float(tpl.get("base_shift", 3.0), 3.0))
+    hires_shift = _to_float(current_hires_shift, _to_float(tpl.get("hires_shift", base_shift), base_shift))
     has_base_rows = bool(tpl.get("base_rows"))
     has_hires_rows = bool(tpl.get("hires_rows"))
-    base_shift = tpl_base_shift if has_base_rows or not has_hires_rows else tpl_hires_shift
-    hires_shift = tpl_hires_shift if has_hires_rows or not has_base_rows else tpl_base_shift
     fallback_optimization = _option_key("optimization", current_optimization, OPT_BALANCE)
     base_tpl = _normalize_rows(
         tpl.get("base_rows") or tpl.get("hires_rows") or base_current,
         None,
-        base_shift if has_base_rows or has_hires_rows else current_base_shift,
+        base_shift,
         optimization_key if has_base_rows or has_hires_rows else fallback_optimization,
     )
     hires_tpl = _normalize_rows(
         tpl.get("hires_rows") or tpl.get("base_rows") or hires_current,
         None,
-        hires_shift if has_hires_rows or has_base_rows else current_hires_shift,
+        hires_shift,
         optimization_key if has_hires_rows or has_base_rows else fallback_optimization,
     )
     target = _option_key("apply_target", target, APPLY_BASE)
@@ -932,8 +996,8 @@ def _apply_template_ui(name, target, base_row_count, hires_row_count, current_ba
         gr.update(value=base_count_value),
         gr.update(value=hires_count_value),
         gr.update(value=tpl.get("hires_independent", False)),
-        gr.update(value=base_shift),
-        gr.update(value=hires_shift),
+        gr.update(),
+        gr.update(),
         gr.update(value=tpl.get("global_strength", 0.7)),
         gr.update(value=_option_label("optimization", optimization_key)),
         gr.update(value=_option_label("combine", tpl.get("combine_mode", COMBINE_OUTPUT_AVG))),
@@ -1036,6 +1100,12 @@ class MixerState:
     artists: list[ArtistRuntime] = field(default_factory=list)
     progress_warning: bool = False
     batched_disabled: bool = False
+    patched_blocks: list[int] = field(default_factory=list)
+    dispatch_calls: int = 0
+    active_calls: int = 0
+    fallback_calls: int = 0
+    wrapper_checks: int = 0
+    superseded: bool = False
 
     def target_blocks(self):
         blocks = set()
@@ -1045,11 +1115,13 @@ class MixerState:
 
 
 _PATCHED_MODULES = []
+_PATCHED_MODEL_WRAPPERS = []
 _ACTIVE_STATE = None
+_RUN_STATES = []
 
 
 def _unpatch_cross_attn():
-    global _PATCHED_MODULES
+    global _PATCHED_MODULES, _PATCHED_MODEL_WRAPPERS
     for module, original in reversed(_PATCHED_MODULES):
         try:
             if getattr(module.forward, "_anima_artist_mixer_wrapper", False):
@@ -1057,6 +1129,17 @@ def _unpatch_cross_attn():
         except Exception:
             logger.exception("Failed to restore Anima artist mixer cross-attn wrapper")
     _PATCHED_MODULES = []
+    for unet, had_wrapper, original_wrapper in reversed(_PATCHED_MODEL_WRAPPERS):
+        try:
+            current = unet.model_options.get("model_function_wrapper")
+            if getattr(current, "_anima_artist_mixer_model_wrapper", False):
+                if had_wrapper:
+                    unet.model_options["model_function_wrapper"] = original_wrapper
+                else:
+                    unet.model_options.pop("model_function_wrapper", None)
+        except Exception:
+            logger.exception("Failed to restore Anima artist mixer model wrapper")
+    _PATCHED_MODEL_WRAPPERS = []
 
 
 def _validate_anima_unet(unet):
@@ -1078,6 +1161,7 @@ def _validate_anima_unet(unet):
 def _install_cross_attn_patch(dm, state):
     _unpatch_cross_attn()
     target_blocks = state.target_blocks()
+    patched = []
     for idx, block in enumerate(getattr(dm, "blocks", [])):
         if idx not in target_blocks or not hasattr(block, "cross_attn"):
             continue
@@ -1101,6 +1185,85 @@ def _install_cross_attn_patch(dm, state):
 
         module.forward = make_wrapper(original, idx)
         _PATCHED_MODULES.append((module, original))
+        patched.append(idx)
+    state.patched_blocks = patched
+    if patched:
+        logger.info("Anima artist mixer patched %d cross-attn blocks: %s", len(patched), _summarize_blocks(patched))
+    else:
+        logger.warning("Anima artist mixer found no target cross-attn blocks to patch.")
+
+
+def _summarize_blocks(blocks):
+    values = sorted(set(int(x) for x in blocks))
+    if not values:
+        return "none"
+    ranges = []
+    start = prev = values[0]
+    for value in values[1:]:
+        if value == prev + 1:
+            prev = value
+            continue
+        ranges.append(f"{start}" if start == prev else f"{start}-{prev}")
+        start = prev = value
+    ranges.append(f"{start}" if start == prev else f"{start}-{prev}")
+    return ",".join(ranges)
+
+
+def _install_model_wrapper(unet, dm, state):
+    global _PATCHED_MODEL_WRAPPERS
+    options = getattr(unet, "model_options", None)
+    if not isinstance(options, dict):
+        return
+    existing = options.get("model_function_wrapper")
+    if getattr(existing, "_anima_artist_mixer_model_wrapper", False):
+        return
+    had_wrapper = "model_function_wrapper" in options
+
+    def model_wrapper(apply_model, args):
+        state.wrapper_checks += 1
+        if not _PATCHED_MODULES:
+            _install_cross_attn_patch_no_unpatch(dm, state)
+        if existing is not None:
+            return existing(apply_model, args)
+        return apply_model(args.get("input"), args.get("timestep"), **args.get("c", {}))
+
+    model_wrapper._anima_artist_mixer_model_wrapper = True
+    options["model_function_wrapper"] = model_wrapper
+    _PATCHED_MODEL_WRAPPERS.append((unet, had_wrapper, existing))
+
+
+def _install_cross_attn_patch_no_unpatch(dm, state):
+    if _PATCHED_MODULES:
+        return
+    target_blocks = state.target_blocks()
+    patched = []
+    for idx, block in enumerate(getattr(dm, "blocks", [])):
+        if idx not in target_blocks or not hasattr(block, "cross_attn"):
+            continue
+        module = block.cross_attn
+        original = module.forward
+
+        def make_wrapper(original_forward, layer_idx):
+            def wrapped(x, context=None, rope_emb=None, transformer_options={}):
+                return _dispatch_cross_attn(
+                    original_forward,
+                    layer_idx,
+                    state,
+                    x,
+                    context=context,
+                    rope_emb=rope_emb,
+                    transformer_options=transformer_options,
+                )
+
+            wrapped._anima_artist_mixer_wrapper = True
+            return wrapped
+
+        module.forward = make_wrapper(original, idx)
+        _PATCHED_MODULES.append((module, original))
+        patched.append(idx)
+    state.patched_blocks = patched
+    if patched:
+        logger.info("Anima artist mixer re-patched %d cross-attn blocks at model call: %s", len(patched), _summarize_blocks(patched))
 
 
 def _broadcast_batch(tensor, batch_size):
@@ -1195,17 +1358,22 @@ def _artist_forward_batched(original_forward, x, context, rope_emb, transformer_
 
 
 def _dispatch_cross_attn(original_forward, layer_idx, state, x, context=None, rope_emb=None, transformer_options={}):
+    state.dispatch_calls += 1
     if not state.enabled or context is None or not state.artists:
+        state.fallback_calls += 1
         return original_forward(x, context=context, rope_emb=rope_emb, transformer_options=transformer_options)
     progress = _current_progress(transformer_options, state)
     active = _active_artists(state, layer_idx, progress)
     if not active:
+        state.fallback_calls += 1
         return original_forward(x, context=context, rope_emb=rope_emb, transformer_options=transformer_options)
+    state.active_calls += 1
     try:
         if state.combine_mode == COMBINE_CONCAT:
             return _dispatch_concat(original_forward, state, x, context, rope_emb, transformer_options, active)
         return _dispatch_output_avg(original_forward, state, x, context, rope_emb, transformer_options, active)
     except Exception as exc:
+        state.fallback_calls += 1
         logger.exception("Anima artist mixer failed at block %s, falling back to original cross-attn: %s", layer_idx, exc)
         return original_forward(x, context=context, rope_emb=rope_emb, transformer_options=transformer_options)
 
@@ -1365,6 +1533,7 @@ class Script(scripts.Script):
         """
         with gr.Accordion(_t("accordion"), open=False, elem_id=self.elem_id("accordion")):
             gr.HTML(table_css)
+            gr.HTML(_shift_sync_script(self.elem_id("runtime_base_shift"), self.elem_id("runtime_hires_shift"), is_img2img=is_img2img))
             with gr.Row():
                 intro_language = gr.Radio(
                     choices=["English", "中文"],
@@ -1376,6 +1545,8 @@ class Script(scripts.Script):
             intro_status = gr.Markdown(value="", elem_id=self.elem_id("intro_status"))
             intro_language.change(fn=_save_ui_language, inputs=[intro_language], outputs=[intro, intro_status], queue=False, show_progress=False)
 
+            runtime_base_shift = gr.Number(value=3.0, visible=False, elem_id=self.elem_id("runtime_base_shift"))
+            runtime_hires_shift = gr.Number(value=3.0, visible=False, elem_id=self.elem_id("runtime_hires_shift"))
             enable = gr.Checkbox(label=_t("enable"), value=False, elem_id=self.elem_id("enable"))
             with gr.Row():
                 optimization = gr.Dropdown(label=_t("optimization"), choices=_option_choices("optimization", lang), value=default_optimization, elem_id=self.elem_id("optimization"))
@@ -1389,8 +1560,8 @@ class Script(scripts.Script):
             with gr.Tab(_t("base_tab")):
                 with gr.Row():
                     base_row_count = gr.Number(label=_t("row_count"), value=3, precision=0, elem_id=self.elem_id("base_row_count"))
-                    base_shift = gr.Number(label=_t("base_shift"), value=3.0, precision=4, elem_id=self.elem_id("base_shift"))
                     base_apply_presets = gr.Button(_t("normalize_rows"), elem_id=self.elem_id("base_apply_presets"))
+                gr.Markdown(value=_t("shift_runtime_hint"))
                 gr.Markdown(value=f"**{_t('artist_table')}**")
                 base_row_components = _create_artist_row_controls("base", lang, default_rows, self.elem_id)
 
@@ -1398,8 +1569,8 @@ class Script(scripts.Script):
                 hires_independent = gr.Checkbox(label=_t("hires_independent"), value=False, elem_id=self.elem_id("hires_independent"))
                 with gr.Row():
                     hires_row_count = gr.Number(label=_t("hr_row_count"), value=3, precision=0, elem_id=self.elem_id("hires_row_count"))
-                    hires_shift = gr.Number(label=_t("hires_shift"), value=3.0, precision=4, elem_id=self.elem_id("hires_shift"))
                     hires_apply_presets = gr.Button(_t("normalize_rows"), elem_id=self.elem_id("hires_apply_presets"))
+                gr.Markdown(value=_t("shift_runtime_hint"))
                 gr.Markdown(value=f"**{_t('artist_table')}**")
                 hires_row_components = _create_artist_row_controls("hires", lang, default_rows, self.elem_id)
 
@@ -1423,52 +1594,85 @@ class Script(scripts.Script):
 
         base_row_count.change(
             fn=_resize_row_components,
-            inputs=[base_row_count, base_shift, optimization, *base_row_components],
+            inputs=[base_row_count, runtime_base_shift, optimization, *base_row_components],
             outputs=base_row_components,
             queue=False,
             show_progress=False,
         )
         hires_row_count.change(
             fn=_resize_row_components,
-            inputs=[hires_row_count, hires_shift, optimization, *hires_row_components],
+            inputs=[hires_row_count, runtime_hires_shift, optimization, *hires_row_components],
             outputs=hires_row_components,
             queue=False,
             show_progress=False,
         )
-        base_shift.change(
+        runtime_base_shift.change(
             fn=_apply_shift_to_components,
-            inputs=[base_row_count, base_shift, optimization, *base_row_components],
+            inputs=[base_row_count, runtime_base_shift, optimization, *base_row_components],
             outputs=base_row_components,
             queue=False,
             show_progress=False,
         )
-        hires_shift.change(
+        runtime_hires_shift.change(
             fn=_apply_shift_to_components,
-            inputs=[hires_row_count, hires_shift, optimization, *hires_row_components],
+            inputs=[hires_row_count, runtime_hires_shift, optimization, *hires_row_components],
             outputs=hires_row_components,
             queue=False,
             show_progress=False,
         )
         base_apply_presets.click(
             fn=_resize_row_components,
-            inputs=[base_row_count, base_shift, optimization, *base_row_components],
+            inputs=[base_row_count, runtime_base_shift, optimization, *base_row_components],
             outputs=base_row_components,
             queue=False,
             show_progress=False,
         )
         hires_apply_presets.click(
             fn=_resize_row_components,
-            inputs=[hires_row_count, hires_shift, optimization, *hires_row_components],
+            inputs=[hires_row_count, runtime_hires_shift, optimization, *hires_row_components],
             outputs=hires_row_components,
             queue=False,
             show_progress=False,
         )
+        optimization.change(
+            fn=_apply_shift_to_components,
+            inputs=[base_row_count, runtime_base_shift, optimization, *base_row_components],
+            outputs=base_row_components,
+            queue=False,
+            show_progress=False,
+        )
+        optimization.change(
+            fn=_apply_shift_to_components,
+            inputs=[hires_row_count, runtime_hires_shift, optimization, *hires_row_components],
+            outputs=hires_row_components,
+            queue=False,
+            show_progress=False,
+        )
+        for row_components, row_count, runtime_shift in (
+            (base_row_components, base_row_count, runtime_base_shift),
+            (hires_row_components, hires_row_count, runtime_hires_shift),
+        ):
+            for offset in range(0, len(row_components), 10):
+                row_components[offset + 8].change(
+                    fn=_apply_shift_to_components,
+                    inputs=[row_count, runtime_shift, optimization, *row_components],
+                    outputs=row_components,
+                    queue=False,
+                    show_progress=False,
+                )
+                row_components[offset + 9].change(
+                    fn=_apply_shift_to_components,
+                    inputs=[row_count, runtime_shift, optimization, *row_components],
+                    outputs=row_components,
+                    queue=False,
+                    show_progress=False,
+                )
         template_save_base.click(
             fn=_save_base_template_ui,
             inputs=[
                 template_name,
                 base_row_count,
-                base_shift,
+                runtime_base_shift,
                 global_strength,
                 optimization,
                 combine_mode,
@@ -1487,7 +1691,7 @@ class Script(scripts.Script):
                 template_name,
                 hires_independent,
                 hires_row_count,
-                hires_shift,
+                runtime_hires_shift,
                 global_strength,
                 optimization,
                 combine_mode,
@@ -1504,13 +1708,13 @@ class Script(scripts.Script):
         delete_button.click(fn=_delete_template_ui, inputs=[template_dropdown], outputs=[template_dropdown, template_status], queue=False, show_progress=False)
         template_apply.click(
             fn=_apply_template_ui,
-            inputs=[template_dropdown, template_apply_target, base_row_count, hires_row_count, base_shift, hires_shift, optimization, *base_row_components, *hires_row_components],
+            inputs=[template_dropdown, template_apply_target, base_row_count, hires_row_count, runtime_base_shift, runtime_hires_shift, optimization, *base_row_components, *hires_row_components],
             outputs=[
                 base_row_count,
                 hires_row_count,
                 hires_independent,
-                base_shift,
-                hires_shift,
+                runtime_base_shift,
+                runtime_hires_shift,
                 global_strength,
                 optimization,
                 combine_mode,
@@ -1530,8 +1734,8 @@ class Script(scripts.Script):
             base_row_count,
             hires_row_count,
             hires_independent,
-            base_shift,
-            hires_shift,
+            runtime_base_shift,
+            runtime_hires_shift,
             global_strength,
             optimization,
             combine_mode,
@@ -1551,8 +1755,8 @@ class Script(scripts.Script):
             base_row_count,
             hires_row_count,
             hires_independent,
-            base_shift,
-            hires_shift,
+            runtime_base_shift,
+            runtime_hires_shift,
             global_strength,
             optimization,
             combine_mode,
@@ -1578,10 +1782,11 @@ class Script(scripts.Script):
         if dm is None:
             logger.warning("Anima artist mixer disabled: %s", msg)
             return
-        base_rows = _active_rows_from_components(base_row_count, base_shift, optimization, *base_values, display=False)
-        hires_rows = _active_rows_from_components(hires_row_count, hires_shift, optimization, *hires_values, display=False)
+        fallback_shift = runtime_hires_shift if getattr(p, "is_hr_pass", False) and hires_independent else runtime_base_shift
+        shift = _runtime_shift_from_processing(p, fallback_shift)
+        base_rows = _active_rows_from_components(base_row_count, shift, optimization, *base_values, display=False)
+        hires_rows = _active_rows_from_components(hires_row_count, shift, optimization, *hires_values, display=False)
         rows = hires_rows if getattr(p, "is_hr_pass", False) and hires_independent else base_rows
-        shift = hires_shift if getattr(p, "is_hr_pass", False) and hires_independent else base_shift
         optimization = _option_key("optimization", optimization, OPT_BALANCE)
         combine_mode = _option_key("combine", combine_mode, COMBINE_OUTPUT_AVG)
         fusion_mode = _option_key("fusion", fusion_mode, FUSION_INTERPOLATE)
@@ -1607,14 +1812,42 @@ class Script(scripts.Script):
             batched=bool(defaults["batched"]),
             artists=artists,
         )
+        previous_states = list(_RUN_STATES)
+        for previous in previous_states:
+            previous.superseded = True
         _install_cross_attn_patch(dm, state)
+        _install_model_wrapper(unet, dm, state)
         _ACTIVE_STATE = state
+        _RUN_STATES.append(state)
         p.extra_generation_params["Anima Artist Mixer"] = (
             f"{len(artists)} artists, strength={state.global_strength:.2f}, "
-            f"{state.combine_mode}/{state.fusion_mode}, preset={optimization}"
+            f"{state.combine_mode}/{state.fusion_mode}, preset={optimization}, shift={shift:.2f}"
         )
 
     def postprocess(self, p, processed, *args, **kwargs):
         global _ACTIVE_STATE
+        states = list(_RUN_STATES)
         _unpatch_cross_attn()
         _ACTIVE_STATE = None
+        _RUN_STATES.clear()
+        for state in states:
+            if state.superseded:
+                continue
+            if not state.dispatch_calls:
+                logger.warning(
+                    "Anima artist mixer did not receive any cross-attn calls for run %s. "
+                    "Patched blocks=%s, wrapper checks=%d. If the image is unchanged, reload UI and test again.",
+                    state.run_id,
+                    _summarize_blocks(state.patched_blocks),
+                    state.wrapper_checks,
+                )
+            else:
+                logger.info(
+                    "Anima artist mixer run %s finished: dispatch=%d active=%d fallback=%d patched=%s wrapper_checks=%d",
+                    state.run_id,
+                    state.dispatch_calls,
+                    state.active_calls,
+                    state.fallback_calls,
+                    _summarize_blocks(state.patched_blocks),
+                    state.wrapper_checks,
+                )

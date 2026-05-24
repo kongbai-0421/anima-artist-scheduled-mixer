@@ -33,6 +33,7 @@ ui-config.json
 params.txt
 artist_mixer_templates.json
 artist_mixer_cache/
+intro_language.json
 
 # OS / editor files
 .DS_Store

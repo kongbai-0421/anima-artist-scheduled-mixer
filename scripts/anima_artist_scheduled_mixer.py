@@ -17,6 +17,7 @@ logger = logging.getLogger("anima_artist_scheduled_mixer")
 
 EXTENSION_DIR = Path(__file__).resolve().parents[1]
 TEMPLATE_FILE = EXTENSION_DIR / "artist_mixer_templates.json"
+INTRO_LANGUAGE_FILE = EXTENSION_DIR / "intro_language.json"
 REFERENCE_URL = "https://github.com/An1X3R/Anima-Artist-Mixer"
 
 LANGUAGE_OPTION = "anima_artist_scheduled_mixer_language"
@@ -59,22 +60,20 @@ TABLE_HEADERS = [
     "Peak",
     "Curve",
     "Stage",
-    "Shift",
     "Auto Shift",
 ]
 
 TABLE_DATATYPES = [
-    "bool",
-    "str",
-    "number",
-    "str",
-    "number",
-    "number",
-    "number",
     "str",
     "str",
     "number",
-    "bool",
+    "str",
+    "number",
+    "number",
+    "number",
+    "str",
+    "str",
+    "str",
 ]
 
 OPTION_LABELS = {
@@ -137,8 +136,7 @@ TABLE_HEADER_LABELS = OrderedDict(
         ("Peak", {"en": "Peak", "zh": "峰值"}),
         ("Curve", {"en": "Curve", "zh": "曲线"}),
         ("Stage", {"en": "Stage", "zh": "阶段"}),
-        ("Shift", {"en": "Shift", "zh": "Shift"}),
-        ("Auto Shift", {"en": "Auto Shift", "zh": "自动Shift"}),
+        ("Auto Shift", {"en": "Auto Shift", "zh": "自动偏移"}),
     ]
 )
 
@@ -157,8 +155,8 @@ LANG = {
         "hires_independent": "高分辨率修复使用独立画师串；关闭时继承底图设置",
         "row_count": "画师行数",
         "hr_row_count": "高分画师行数",
-        "base_shift": "底图 Shift",
-        "hires_shift": "高分 Shift",
+        "base_shift": "底图偏移（Shift）",
+        "hires_shift": "高分偏移（Shift）",
         "artist_table": "画师设置",
         "global_strength": "全局画师强度",
         "optimization": "优化预设",
@@ -174,7 +172,7 @@ LANG = {
         "delete_template": "删除模板",
         "apply_target": "模板应用目标",
         "apply_template": "应用模板",
-        "normalize_rows": "应用阶段/Shift 预设",
+        "normalize_rows": "应用阶段/偏移预设",
         "help": "说明",
         "status": "状态",
         "empty_template_name": "模板名称为空。",
@@ -255,7 +253,7 @@ HELP_EN = """
 
 `Weight` controls this artist's relative and absolute contribution. `Blocks` accepts `0-27`, `0,3,5-12`, or negative indices such as `-1`. `Start/End/Peak` are denoise progress values from 0 to 1. `Curve` shapes the row strength inside the window.
 
-`Stage + Shift + Auto Shift` can rewrite timing like the Anima LoRA Stage Scheduler: Composition is early, Character is middle, Style is late; larger Shift moves windows slightly later. Turn off Auto Shift to edit Start/End/Peak manually.
+`Stage + Auto Shift` can rewrite timing like the Anima LoRA Stage Scheduler. It always uses the Base/Hires Shift value above the table: Composition is early, Character is middle, Style is late; larger Shift values move windows slightly later. Turn off Auto Shift to edit Start/End/Peak manually.
 
 **Strength**
 
@@ -275,7 +273,7 @@ HELP_ZH = """
 
 `权重` 控制该画师的相对比例，也会在总权重低于 1 时降低实际介入。`层数` 支持 `0-27`、`0,3,5-12`，也支持 `-1` 这种倒数索引。`开始/结束/峰值` 是 0 到 1 的去噪进度，`曲线` 控制窗口内强度变化。
 
-`阶段 + Shift + 自动Shift` 会像 Anima LoRA 阶段插件一样重写时间：构图靠前，人物居中，画风靠后；Shift 越大窗口会略向后移动。关闭自动Shift后可以手动编辑开始、结束和峰值。
+`阶段 + 自动偏移` 会像 Anima LoRA 阶段插件一样重写时间，并且完全使用表格上方的底图/高分偏移（Shift）：构图靠前，人物居中，画风靠后；偏移值越大窗口会略向后移动。关闭自动偏移后可以手动编辑开始、结束和峰值。
 
 **强度**
 
@@ -300,6 +298,36 @@ def _t(key):
 
 def _intro_text(language):
     return INTRO_ZH if language == "中文" else INTRO_EN
+
+
+def _intro_choice(language=None):
+    fallback = "中文" if (language or _language()) == "zh" else "English"
+    try:
+        with INTRO_LANGUAGE_FILE.open("r", encoding="utf-8") as f:
+            value = json.load(f).get("language")
+        return value if value in {"English", "中文"} else fallback
+    except Exception:
+        return fallback
+
+
+def _intro_default(language=None):
+    return _intro_text(_intro_choice(language))
+
+
+def _save_intro_language(language):
+    choice = "中文" if language == "中文" else "English"
+    try:
+        INTRO_LANGUAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with INTRO_LANGUAGE_FILE.open("w", encoding="utf-8") as f:
+            json.dump({"language": choice}, f, ensure_ascii=False, indent=2)
+    except Exception:
+        logger.exception("Failed to save Anima artist mixer intro language")
+    return _intro_text(choice)
+
+
+def _bool_label(value, language=None):
+    language = language or _language()
+    return ("是" if _to_bool(value, True) else "否") if language == "zh" else ("Yes" if _to_bool(value, True) else "No")
 
 
 def _option_key(group, value, fallback=None):
@@ -349,13 +377,23 @@ def _header_key(value):
     return text
 
 
+def _normalize_bool_display(value, fallback=True):
+    if isinstance(value, str):
+        text = value.strip().casefold()
+        if text in {"yes", "no", "是", "否"}:
+            return value.strip()
+    return _bool_label(_to_bool(value, fallback))
+
+
 def _rows_for_display(rows, language=None):
     out = []
     for row in _coerce_table(rows):
         row += [None] * (len(TABLE_HEADERS) - len(row))
         new_row = list(row[: len(TABLE_HEADERS)])
+        new_row[0] = _bool_label(new_row[0], language)
         new_row[7] = _option_label("curve", new_row[7], language)
         new_row[8] = _option_label("stage", new_row[8], language)
+        new_row[9] = _bool_label(new_row[9], language)
         out.append(new_row)
     return out
 
@@ -402,9 +440,9 @@ def _to_bool(value, fallback=False):
     if value is None:
         return fallback
     text = str(value).strip().lower()
-    if text in {"1", "true", "yes", "y", "on", "启用", "是"}:
+    if text in {"1", "true", "yes", "y", "on", "启用", "是", "开"}:
         return True
-    if text in {"0", "false", "no", "n", "off", "禁用", "否"}:
+    if text in {"0", "false", "no", "n", "off", "禁用", "否", "关"}:
         return False
     return fallback
 
@@ -533,7 +571,7 @@ def _default_rows(count=3, shift=3.0, optimization=OPT_BALANCE):
             blocks = "8-20"
         elif optimization == OPT_QUALITY:
             blocks = "0-27"
-        rows.append([True, "", 1.0, blocks, start, end, peak, CURVE_SMOOTH, stage, shift, True])
+        rows.append([True, "", 1.0, blocks, start, end, peak, CURVE_SMOOTH, stage, True])
     return rows
 
 
@@ -558,7 +596,11 @@ def _coerce_table(value):
             keyed = {_header_key(k): v for k, v in row.items()}
             rows.append([keyed.get(h) for h in TABLE_HEADERS])
         elif isinstance(row, (list, tuple)):
-            padded = list(row)[: len(TABLE_HEADERS)]
+            padded = list(row)
+            if len(padded) == len(TABLE_HEADERS) + 1:
+                # Older templates had a per-row Shift column before Auto Shift.
+                padded.pop(9)
+            padded = padded[: len(TABLE_HEADERS)]
             padded += [None] * (len(TABLE_HEADERS) - len(padded))
             rows.append(padded)
     return rows
@@ -584,15 +626,16 @@ def _normalize_rows(value, row_count=None, shift=3.0, optimization=OPT_BALANCE, 
         peak = _clamp(_to_float(raw[6], defaults[index][6]), 0.0, 1.0)
         curve = _option_key("curve", raw[7], CURVE_SMOOTH)
         stage = _option_key("stage", raw[8], PRESET_CUSTOM)
-        row_shift = _clamp(_to_float(raw[9], shift), 1.0, 24.0)
-        auto = _to_bool(raw[10], True)
+        auto = _to_bool(raw[9], True)
         if auto and stage != PRESET_CUSTOM:
-            start, end, peak = _auto_stage_values(stage, row_shift)
+            start, end, peak = _auto_stage_values(stage, shift)
+        enabled_value = _bool_label(enabled) if display else enabled
         curve_value = _option_label("curve", curve) if display else curve
         stage_value = _option_label("stage", stage) if display else stage
+        auto_value = _bool_label(auto) if display else auto
         normalized.append(
             [
-                enabled,
+                enabled_value,
                 artist,
                 weight,
                 blocks,
@@ -601,8 +644,7 @@ def _normalize_rows(value, row_count=None, shift=3.0, optimization=OPT_BALANCE, 
                 round(peak, 4),
                 curve_value,
                 stage_value,
-                round(row_shift, 4),
-                auto,
+                auto_value,
             ]
         )
     return normalized
@@ -615,12 +657,7 @@ def _resize_table(value, count, shift, optimization):
 
 def _apply_shift_to_rows(value, shift, optimization):
     rows = _coerce_table(value)
-    out = []
-    for row in rows:
-        row += [None] * (len(TABLE_HEADERS) - len(row))
-        row[9] = _clamp(_to_float(shift, 3.0), 1.0, 24.0)
-        out.append(row)
-    return gr.update(value=_normalize_rows(out, len(out) or 1, shift, optimization))
+    return gr.update(value=_normalize_rows(rows, len(rows) or 1, shift, optimization))
 
 
 def _template_data():
@@ -1111,7 +1148,7 @@ def _build_artists(p, rows, num_blocks, shift, optimization, use_cache):
     prompts = _current_prompts(p)
     artists = []
     for row in rows:
-        enabled, artist_text, weight, blocks_text, start, end, peak, curve, _stage, _shift, _auto = row
+        enabled, artist_text, weight, blocks_text, start, end, peak, curve, _stage, _auto = row
         if not enabled or not artist_text:
             continue
         names = _split_artist_chain(artist_text)
@@ -1160,16 +1197,29 @@ class Script(scripts.Script):
         default_combine = _option_label("combine", COMBINE_OUTPUT_AVG, lang)
         default_fusion = _option_label("fusion", FUSION_INTERPOLATE, lang)
         default_rows = _normalize_rows(_default_rows(3, 3.0, OPT_BALANCE), 3, 3.0, OPT_BALANCE)
+        intro_default_choice = _intro_choice(lang)
+        table_column_widths = ["88px", "180px", "96px", "120px", "96px", "96px", "96px", "140px", "140px", "120px"]
+        table_css = f"""
+        <style>
+        #{self.elem_id("accordion")} [data-testid="sort-button"],
+        #{self.elem_id("accordion")} .sort-button,
+        #{self.elem_id("accordion")} button[aria-label*="Sort"],
+        #{self.elem_id("accordion")} button[title*="Sort"] {{
+            display: none !important;
+        }}
+        </style>
+        """
         with gr.Accordion(_t("accordion"), open=False, elem_id=self.elem_id("accordion")):
+            gr.HTML(table_css)
             with gr.Row():
                 intro_language = gr.Radio(
                     choices=["English", "中文"],
-                    value="English",
+                    value=intro_default_choice,
                     label=_t("intro_language"),
                     elem_id=self.elem_id("intro_language"),
                 )
-            intro = gr.Markdown(value=INTRO_EN, elem_id=self.elem_id("intro"))
-            intro_language.change(fn=_intro_text, inputs=[intro_language], outputs=[intro], queue=False, show_progress=False)
+            intro = gr.Markdown(value=_intro_default(lang), elem_id=self.elem_id("intro"))
+            intro_language.change(fn=_save_intro_language, inputs=[intro_language], outputs=[intro], queue=False, show_progress=False)
 
             enable = gr.Checkbox(label=_t("enable"), value=False, elem_id=self.elem_id("enable"))
             with gr.Row():
@@ -1193,6 +1243,7 @@ class Script(scripts.Script):
                     value=default_rows,
                     row_count=(3, "dynamic"),
                     col_count=(len(TABLE_HEADERS), "fixed"),
+                    column_widths=table_column_widths,
                     interactive=True,
                     elem_id=self.elem_id("base_rows"),
                 )
@@ -1210,6 +1261,7 @@ class Script(scripts.Script):
                     value=default_rows,
                     row_count=(3, "dynamic"),
                     col_count=(len(TABLE_HEADERS), "fixed"),
+                    column_widths=table_column_widths,
                     interactive=True,
                     elem_id=self.elem_id("hires_rows"),
                 )

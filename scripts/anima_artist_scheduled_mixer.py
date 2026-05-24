@@ -566,6 +566,8 @@ def _apply_template_ui(name, target, base_rows, hires_rows):
         gr.update(value=tpl.get("optimization", OPT_BALANCE)),
         gr.update(value=tpl.get("combine_mode", COMBINE_OUTPUT_AVG)),
         gr.update(value=tpl.get("fusion_mode", FUSION_INTERPOLATE)),
+        gr.update(value=tpl.get("apply_uncond", False)),
+        gr.update(value=tpl.get("enable_cache", True)),
         f"Applied template `{name}` to {target}.",
     )
 
@@ -1119,6 +1121,8 @@ class Script(scripts.Script):
                 optimization,
                 combine_mode,
                 fusion_mode,
+                apply_uncond,
+                enable_cache,
                 template_status,
             ],
             queue=False,

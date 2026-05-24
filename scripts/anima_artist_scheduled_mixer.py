@@ -77,13 +77,81 @@ TABLE_DATATYPES = [
     "bool",
 ]
 
+OPTION_LABELS = {
+    "optimization": OrderedDict(
+        [
+            (OPT_PERFORMANCE, {"en": "Performance", "zh": "性能", "aliases": ("Perf", "Speed", "速度")}),
+            (OPT_BALANCE, {"en": "Balance", "zh": "平衡", "aliases": ("Balanced", "均衡")}),
+            (OPT_QUALITY, {"en": "Quality", "zh": "质量", "aliases": ("High quality", "高质量")}),
+        ]
+    ),
+    "combine": OrderedDict(
+        [
+            (COMBINE_OUTPUT_AVG, {"en": "Output average", "zh": "输出平均", "aliases": ("output average", "输出平均值")}),
+            (COMBINE_CONCAT, {"en": "Token concat", "zh": "令牌拼接", "aliases": ("concat", "拼接")}),
+        ]
+    ),
+    "fusion": OrderedDict(
+        [
+            (FUSION_INTERPOLATE, {"en": "Interpolate", "zh": "插值融合", "aliases": ("interp", "插值")}),
+            (
+                FUSION_CONCAT_WITH_BASE,
+                {"en": "Concat with base", "zh": "拼接底图条件", "aliases": ("concat base", "拼接原始条件")},
+            ),
+        ]
+    ),
+    "curve": OrderedDict(
+        [
+            (CURVE_SMOOTH, {"en": "Smooth", "zh": "平滑", "aliases": ("平滑曲线",)}),
+            (CURVE_HOLD, {"en": "Hold", "zh": "保持", "aliases": ("恒定", "全程保持")}),
+            (CURVE_TRIANGLE, {"en": "Triangle", "zh": "三角峰", "aliases": ("Triangle peak", "三角")}),
+            (CURVE_FRONT, {"en": "Front loaded", "zh": "前段强化", "aliases": ("Early", "前段")}),
+            (CURVE_BACK, {"en": "Back loaded", "zh": "后段强化", "aliases": ("Late", "后段")}),
+        ]
+    ),
+    "stage": OrderedDict(
+        [
+            (PRESET_CUSTOM, {"en": "Custom", "zh": "自定义", "aliases": ("手动",)}),
+            (PRESET_COMPOSITION, {"en": "Composition", "zh": "构图", "aliases": ("Compose", "布局")}),
+            (PRESET_CHARACTER, {"en": "Character", "zh": "人物", "aliases": ("Subject", "角色")}),
+            (PRESET_STYLE, {"en": "Style", "zh": "画风", "aliases": ("Artist style", "风格")}),
+        ]
+    ),
+    "apply_target": OrderedDict(
+        [
+            (APPLY_BASE, {"en": "Base", "zh": "底图", "aliases": ("Base image", "底图设置")}),
+            (APPLY_HIRES, {"en": "Hires. fix", "zh": "高分修复", "aliases": ("Hires", "Highres", "高分")}),
+            (APPLY_BOTH, {"en": "Both", "zh": "两者", "aliases": ("All", "全部")}),
+        ]
+    ),
+}
+
+TABLE_HEADER_LABELS = OrderedDict(
+    [
+        ("Enabled", {"en": "Enabled", "zh": "启用"}),
+        ("Artist", {"en": "Artist", "zh": "画师"}),
+        ("Weight", {"en": "Weight", "zh": "权重"}),
+        ("Blocks", {"en": "Blocks", "zh": "层数"}),
+        ("Start", {"en": "Start", "zh": "开始"}),
+        ("End", {"en": "End", "zh": "结束"}),
+        ("Peak", {"en": "Peak", "zh": "峰值"}),
+        ("Curve", {"en": "Curve", "zh": "曲线"}),
+        ("Stage", {"en": "Stage", "zh": "阶段"}),
+        ("Shift", {"en": "Shift", "zh": "Shift"}),
+        ("Auto Shift", {"en": "Auto Shift", "zh": "自动Shift"}),
+    ]
+)
+
 
 LANG = {
     "zh": {
         "title": "Anima 画师串调度混合",
         "accordion": "Anima 画师串调度混合",
         "settings_label": "Anima 画师串调度混合界面语言",
+        "intro_language": "说明语言",
         "enable": "启用画师串混合",
+        "base_tab": "底图",
+        "hires_tab": "高分修复",
         "base_panel": "底图画师",
         "hires_panel": "高分辨率修复画师",
         "hires_independent": "高分辨率修复使用独立画师串；关闭时继承底图设置",
@@ -109,12 +177,23 @@ LANG = {
         "normalize_rows": "应用阶段/Shift 预设",
         "help": "说明",
         "status": "状态",
+        "empty_template_name": "模板名称为空。",
+        "saved_template": "已保存模板：{name}",
+        "no_template_selected": "未选择模板。",
+        "new_template_name_empty": "新模板名称为空。",
+        "renamed_template": "已重命名模板为：{name}",
+        "deleted_template": "已删除模板：{name}",
+        "no_template_deleted": "没有删除任何模板。",
+        "applied_template": "已将模板 `{name}` 应用到{target}。",
     },
     "en": {
         "title": "Anima Artist Scheduled Mixer",
         "accordion": "Anima Artist Scheduled Mixer",
         "settings_label": "Anima Artist Scheduled Mixer UI language",
+        "intro_language": "Description language",
         "enable": "Enable artist mixing",
+        "base_tab": "Base",
+        "hires_tab": "Hires. fix",
         "base_panel": "Base artists",
         "hires_panel": "Hires. fix artists",
         "hires_independent": "Use independent Hires. fix artist chain; disabled = inherit base settings",
@@ -140,19 +219,31 @@ LANG = {
         "normalize_rows": "Apply stage/Shift presets",
         "help": "Guide",
         "status": "Status",
+        "empty_template_name": "Template name is empty.",
+        "saved_template": "Saved template: {name}",
+        "no_template_selected": "No template selected.",
+        "new_template_name_empty": "New template name is empty.",
+        "renamed_template": "Renamed template to: {name}",
+        "deleted_template": "Deleted template: {name}",
+        "no_template_deleted": "No template deleted.",
+        "applied_template": "Applied template `{name}` to {target}.",
     },
 }
 
 
 INTRO_EN = f"""
 Independent artist encoding and scheduled cross-attention mixing for Anima.
-Each artist row is encoded separately as `artist + base prompt`, then mixed inside Anima cross-attention with `output_avg + interpolate`, close to the approach used by [{REFERENCE_URL}]({REFERENCE_URL}).
+Each artist row is encoded separately as `artist + base prompt`, then mixed inside Anima cross-attention. The default `Output average + Interpolate` path is close to the approach used by [{REFERENCE_URL}]({REFERENCE_URL}).
+
+The option labels follow the selected UI language, while templates keep stable internal values. Old templates that stored English, Chinese, or raw values should still load correctly after switching languages.
 
 Thanks to **An1X3R/Anima-Artist-Mixer** and **汐浮尘/utowo** for the original split-and-encode/cross-attention design.
 """
 
 INTRO_ZH = f"""
-面向 Anima 的独立画师编码与按阶段 cross-attention 混合。每个画师会单独按 `画师 + 主提示词` 编码，再在 Anima 的 cross-attention 内用 `output_avg + interpolate` 混合，效果路线接近 [{REFERENCE_URL}]({REFERENCE_URL})。
+面向 Anima 的独立画师编码与按阶段 cross-attention 混合。每个画师会单独按 `画师 + 主提示词` 编码，再在 Anima 的 cross-attention 内混合。默认的“输出平均 + 插值融合”路线接近 [{REFERENCE_URL}]({REFERENCE_URL})。
+
+面板选项会跟随界面语言显示，模板内部使用稳定值保存。旧模板即使保存过英文、中文或原始值，切换语言后也会尽量自动识别并回显。
 
 感谢 **An1X3R/Anima-Artist-Mixer** 与 **汐浮尘/utowo** 的原始独立编码和 cross-attention 混合设计。
 """
@@ -160,33 +251,41 @@ INTRO_ZH = f"""
 HELP_EN = """
 **Columns**
 
-`Artist`: one artist tag or weighted tag such as `(wlop:1.2)`. `Weight` controls this row's relative and absolute contribution. `Blocks` accepts `0-27`, `0,3,5-12`, or negative indices such as `-1`.
+`Artist`: one artist prompt per row. It may include an inline row multiplier such as `(wlop:1.2)`, `[wlop:0.8]`, or `wlop:1.2`; the final row strength is `Weight x inline multiplier`. Keep comma-separated chains for quick migration if needed, but one artist per row gives the cleanest control.
 
-`Start/End/Peak` are denoise progress values from 0 to 1. `Curve` shapes the row strength inside the window. `Stage + Shift + Auto Shift` can rewrite timing like the Anima LoRA Stage Scheduler: Composition is early, Character is middle, Style is late; larger Shift moves windows slightly later.
+`Weight` controls this artist's relative and absolute contribution. `Blocks` accepts `0-27`, `0,3,5-12`, or negative indices such as `-1`. `Start/End/Peak` are denoise progress values from 0 to 1. `Curve` shapes the row strength inside the window.
+
+`Stage + Shift + Auto Shift` can rewrite timing like the Anima LoRA Stage Scheduler: Composition is early, Character is middle, Style is late; larger Shift moves windows slightly later. Turn off Auto Shift to edit Start/End/Peak manually.
 
 **Strength**
 
-Global artist strength blends the normal prompt cross-attention output with the mixed artist output. Row weights choose each artist's share; small row weights also reduce total influence when the active weights sum below 1.
+Global artist strength blends the normal prompt cross-attention output with the mixed artist output. Row weights choose each artist's share; small row weights also reduce total influence when the active weights sum below 1. A row value like `Artist=(wlop:1.2), Weight=0.5` acts like a final artist row weight of `0.6`.
 
-**Optimization**
+**Modes**
 
-Performance narrows the default layers/time and caps active work more aggressively. Balance is the default. Quality keeps wider windows. The core mode remains `output_avg + interpolate`, matching the recommended mode in the reference project.
+Optimization presets change default block ranges and the maximum number of active artists: Performance is cheaper, Balance is the default, Quality keeps wider defaults. Combine mode decides whether artist outputs are averaged after separate cross-attention calls or concatenated into one artist context. Fusion mode decides whether artists replace the base cross-attention context by interpolation, or are concatenated with the base context before attention.
+
+The UI localizes option labels. Templates are saved with stable internal values, so English/Chinese/raw values can be applied across language modes.
 """
 
 HELP_ZH = """
 **列说明**
 
-`Artist` 填单个画师标签，也可填 `(wlop:1.2)` 这类权重写法。`Weight` 控制该画师的相对比例，也会在总权重低于 1 时降低实际介入。`Blocks` 支持 `0-27`、`0,3,5-12`，也支持 `-1` 这种倒数索引。
+`画师` 每行建议填一个画师提示词。可以直接写行内倍率，例如 `(wlop:1.2)`、`[wlop:0.8]` 或 `wlop:1.2`；最终强度是 `权重 x 行内倍率`。为了迁移旧画师串，逗号分隔仍可用，但每行一个画师最方便单独控制。
 
-`Start/End/Peak` 是 0 到 1 的去噪进度。`Curve` 控制窗口内强度变化。`Stage + Shift + Auto Shift` 会像 Anima LoRA 阶段插件一样重写时间：构图靠前，人物居中，画风靠后；Shift 越大窗口会略向后移动。
+`权重` 控制该画师的相对比例，也会在总权重低于 1 时降低实际介入。`层数` 支持 `0-27`、`0,3,5-12`，也支持 `-1` 这种倒数索引。`开始/结束/峰值` 是 0 到 1 的去噪进度，`曲线` 控制窗口内强度变化。
+
+`阶段 + Shift + 自动Shift` 会像 Anima LoRA 阶段插件一样重写时间：构图靠前，人物居中，画风靠后；Shift 越大窗口会略向后移动。关闭自动Shift后可以手动编辑开始、结束和峰值。
 
 **强度**
 
-全局画师强度用于把原始提示词 cross-attention 输出与画师混合输出插值。单行权重决定画师占比；当活跃权重总和低于 1 时，也会降低整体介入。
+全局画师强度用于把原始提示词 cross-attention 输出与画师混合输出插值。单行权重决定画师占比；当活跃权重总和低于 1 时，也会降低整体介入。例如 `画师=(wlop:1.2)，权重=0.5`，最终该行画师权重相当于 `0.6`。
 
-**优化**
+**模式**
 
-性能预设会缩短默认层数和时间窗口，平衡为默认，质量预设保留更宽窗口。核心仍使用参考项目推荐的 `output_avg + interpolate` 路线。
+优化预设会改变默认层数和活跃画师上限：性能更省，平衡为默认，质量保留更宽默认范围。组合模式决定多个画师是分别 attention 后做输出平均，还是先拼成一个画师上下文。融合模式决定画师条件是通过插值替换原始 cross-attention 上下文，还是先和原始条件拼接后再 attention。
+
+面板会按语言汉化选项。模板保存稳定内部值，因此中文、英文或旧 raw 值模板都可以跨语言应用。
 """
 
 
@@ -201,6 +300,68 @@ def _t(key):
 
 def _intro_text(language):
     return INTRO_ZH if language == "中文" else INTRO_EN
+
+
+def _option_key(group, value, fallback=None):
+    mapping = OPTION_LABELS.get(group, {})
+    if fallback is None and mapping:
+        fallback = next(iter(mapping))
+    if value is None:
+        return fallback
+    text = str(value).strip()
+    if text in mapping:
+        return text
+    folded = text.casefold()
+    for key, labels in mapping.items():
+        candidates = [key, labels.get("en", ""), labels.get("zh", "")]
+        candidates.extend(labels.get("aliases", ()))
+        if folded in {str(item).strip().casefold() for item in candidates if item is not None}:
+            return key
+    return fallback
+
+
+def _option_label(group, value, language=None):
+    language = language or _language()
+    key = _option_key(group, value)
+    labels = OPTION_LABELS.get(group, {}).get(key, {})
+    return labels.get(language) or labels.get("en") or str(value or "")
+
+
+def _option_choices(group, language=None):
+    language = language or _language()
+    return [_option_label(group, key, language) for key in OPTION_LABELS.get(group, {})]
+
+
+def _table_headers(language=None):
+    language = language or _language()
+    return [TABLE_HEADER_LABELS[h].get(language, h) for h in TABLE_HEADERS]
+
+
+def _header_key(value):
+    text = str(value or "").strip()
+    if text in TABLE_HEADERS:
+        return text
+    folded = text.casefold()
+    for key, labels in TABLE_HEADER_LABELS.items():
+        candidates = [key, labels.get("en", ""), labels.get("zh", "")]
+        if folded in {str(item).strip().casefold() for item in candidates if item is not None}:
+            return key
+    return text
+
+
+def _rows_for_display(rows, language=None):
+    out = []
+    for row in _coerce_table(rows):
+        row += [None] * (len(TABLE_HEADERS) - len(row))
+        new_row = list(row[: len(TABLE_HEADERS)])
+        new_row[7] = _option_label("curve", new_row[7], language)
+        new_row[8] = _option_label("stage", new_row[8], language)
+        out.append(new_row)
+    return out
+
+
+def _rows_for_storage(rows, shift=3.0, optimization=OPT_BALANCE):
+    return _normalize_rows(rows, None, shift, optimization, display=False)
 
 
 def _register_ui_settings():
@@ -260,10 +421,17 @@ def _split_artist_chain(chain):
 
 def _parse_inline_weight(text):
     value = str(text or "").strip()
-    match = re.fullmatch(r"\((.*):\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+))\)", value)
-    if not match:
-        return value, 1.0
-    return match.group(1).strip(), _to_float(match.group(2), 1.0)
+    if not value:
+        return "", 1.0
+    number = r"([-+]?(?:\d+(?:\.\d*)?|\.\d+))"
+    wrapped = re.fullmatch(rf"[\(\[](.+?)[：:]\s*{number}[\)\]]", value)
+    if wrapped:
+        return wrapped.group(1).strip(), _to_float(wrapped.group(2), 1.0)
+    if not (value.startswith("<") and value.endswith(">")):
+        trailing = re.fullmatch(rf"(.+?)[：:]\s*{number}", value)
+        if trailing:
+            return trailing.group(1).strip(), _to_float(trailing.group(2), 1.0)
+    return value, 1.0
 
 
 def _parse_blocks(text, num_blocks):
@@ -302,6 +470,7 @@ def _parse_blocks(text, num_blocks):
 
 
 def _auto_stage_values(stage, shift_value):
+    stage = _option_key("stage", stage, PRESET_CUSTOM)
     shift = _clamp(_to_float(shift_value, 3.0), 1.0, 24.0)
     move = _clamp((shift - 3.0) / 21.0, -0.10, 1.0) * 0.12
     if stage == PRESET_COMPOSITION:
@@ -331,7 +500,7 @@ def _curve_factor(progress, start, end, peak, curve):
     if end - start <= 1e-6:
         return 1.0
     local = (progress - start) / max(end - start, 1e-6)
-    curve = str(curve or CURVE_SMOOTH)
+    curve = _option_key("curve", curve, CURVE_SMOOTH)
     if curve == CURVE_HOLD:
         return 1.0
     if curve == CURVE_FRONT:
@@ -353,6 +522,7 @@ def _curve_factor(progress, start, end, peak, curve):
 
 
 def _default_rows(count=3, shift=3.0, optimization=OPT_BALANCE):
+    optimization = _option_key("optimization", optimization, OPT_BALANCE)
     presets = [PRESET_CHARACTER, PRESET_STYLE, PRESET_COMPOSITION]
     rows = []
     for i in range(max(0, int(count))):
@@ -373,7 +543,11 @@ def _coerce_table(value):
     if hasattr(value, "to_dict"):
         try:
             records = value.to_dict("records")
-            return [[record.get(h) for h in TABLE_HEADERS] for record in records]
+            rows = []
+            for record in records:
+                keyed = {_header_key(k): v for k, v in record.items()}
+                rows.append([keyed.get(h) for h in TABLE_HEADERS])
+            return rows
         except Exception:
             pass
     if isinstance(value, dict) and "data" in value:
@@ -381,7 +555,8 @@ def _coerce_table(value):
     rows = []
     for row in value if isinstance(value, (list, tuple)) else []:
         if isinstance(row, dict):
-            rows.append([row.get(h) for h in TABLE_HEADERS])
+            keyed = {_header_key(k): v for k, v in row.items()}
+            rows.append([keyed.get(h) for h in TABLE_HEADERS])
         elif isinstance(row, (list, tuple)):
             padded = list(row)[: len(TABLE_HEADERS)]
             padded += [None] * (len(TABLE_HEADERS) - len(padded))
@@ -389,7 +564,8 @@ def _coerce_table(value):
     return rows
 
 
-def _normalize_rows(value, row_count=None, shift=3.0, optimization=OPT_BALANCE):
+def _normalize_rows(value, row_count=None, shift=3.0, optimization=OPT_BALANCE, display=True):
+    optimization = _option_key("optimization", optimization, OPT_BALANCE)
     rows = _coerce_table(value)
     if row_count is None:
         row_count = len(rows) or 1
@@ -406,16 +582,14 @@ def _normalize_rows(value, row_count=None, shift=3.0, optimization=OPT_BALANCE):
         start = _clamp(_to_float(raw[4], defaults[index][4]), 0.0, 1.0)
         end = _clamp(_to_float(raw[5], defaults[index][5]), 0.0, 1.0)
         peak = _clamp(_to_float(raw[6], defaults[index][6]), 0.0, 1.0)
-        curve = str(raw[7] or CURVE_SMOOTH).strip()
-        if curve not in CURVE_CHOICES:
-            curve = CURVE_SMOOTH
-        stage = str(raw[8] or PRESET_CUSTOM).strip()
-        if stage not in STAGE_PRESETS:
-            stage = PRESET_CUSTOM
+        curve = _option_key("curve", raw[7], CURVE_SMOOTH)
+        stage = _option_key("stage", raw[8], PRESET_CUSTOM)
         row_shift = _clamp(_to_float(raw[9], shift), 1.0, 24.0)
         auto = _to_bool(raw[10], True)
         if auto and stage != PRESET_CUSTOM:
             start, end, peak = _auto_stage_values(stage, row_shift)
+        curve_value = _option_label("curve", curve) if display else curve
+        stage_value = _option_label("stage", stage) if display else stage
         normalized.append(
             [
                 enabled,
@@ -425,8 +599,8 @@ def _normalize_rows(value, row_count=None, shift=3.0, optimization=OPT_BALANCE):
                 round(start, 4),
                 round(end, 4),
                 round(peak, 4),
-                curve,
-                stage,
+                curve_value,
+                stage_value,
                 round(row_shift, 4),
                 auto,
             ]
@@ -481,23 +655,26 @@ def _template_dropdown_update(value=None):
 def _save_template_ui(name, base_rows, hires_rows, hires_independent, base_shift, hires_shift, global_strength, optimization, combine_mode, fusion_mode, apply_uncond, enable_cache):
     name = str(name or "").strip()
     if not name:
-        return _template_dropdown_update(), "Template name is empty."
+        return _template_dropdown_update(), _t("empty_template_name")
+    optimization_key = _option_key("optimization", optimization, OPT_BALANCE)
+    combine_key = _option_key("combine", combine_mode, COMBINE_OUTPUT_AVG)
+    fusion_key = _option_key("fusion", fusion_mode, FUSION_INTERPOLATE)
     data = _template_data()
     data[name] = {
-        "base_rows": _normalize_rows(base_rows, None, base_shift, optimization),
-        "hires_rows": _normalize_rows(hires_rows, None, hires_shift, optimization),
+        "base_rows": _rows_for_storage(base_rows, base_shift, optimization_key),
+        "hires_rows": _rows_for_storage(hires_rows, hires_shift, optimization_key),
         "hires_independent": bool(hires_independent),
         "base_shift": _to_float(base_shift, 3.0),
         "hires_shift": _to_float(hires_shift, 3.0),
         "global_strength": _to_float(global_strength, 0.7),
-        "optimization": optimization if optimization in OPT_PRESETS else OPT_BALANCE,
-        "combine_mode": combine_mode if combine_mode in (COMBINE_OUTPUT_AVG, COMBINE_CONCAT) else COMBINE_OUTPUT_AVG,
-        "fusion_mode": fusion_mode if fusion_mode in (FUSION_INTERPOLATE, FUSION_CONCAT_WITH_BASE) else FUSION_INTERPOLATE,
+        "optimization": optimization_key,
+        "combine_mode": combine_key,
+        "fusion_mode": fusion_key,
         "apply_uncond": bool(apply_uncond),
         "enable_cache": bool(enable_cache),
     }
     _save_template_data(data)
-    return _template_dropdown_update(name), f"Saved template: {name}"
+    return _template_dropdown_update(name), _t("saved_template").format(name=name)
 
 
 def _rename_template_ui(old_name, new_name):
@@ -505,12 +682,12 @@ def _rename_template_ui(old_name, new_name):
     new_name = str(new_name or "").strip()
     data = _template_data()
     if not old_name or old_name not in data:
-        return _template_dropdown_update(), "No template selected."
+        return _template_dropdown_update(), _t("no_template_selected")
     if not new_name:
-        return _template_dropdown_update(old_name), "New template name is empty."
+        return _template_dropdown_update(old_name), _t("new_template_name_empty")
     data[new_name] = data.pop(old_name)
     _save_template_data(data)
-    return _template_dropdown_update(new_name), f"Renamed template to: {new_name}"
+    return _template_dropdown_update(new_name), _t("renamed_template").format(name=new_name)
 
 
 def _delete_template_ui(name):
@@ -519,8 +696,8 @@ def _delete_template_ui(name):
     if name in data:
         data.pop(name)
         _save_template_data(data)
-        return _template_dropdown_update(), f"Deleted template: {name}"
-    return _template_dropdown_update(), "No template deleted."
+        return _template_dropdown_update(), _t("deleted_template").format(name=name)
+    return _template_dropdown_update(), _t("no_template_deleted")
 
 
 def _apply_template_ui(name, target, base_rows, hires_rows):
@@ -541,11 +718,14 @@ def _apply_template_ui(name, target, base_rows, hires_rows):
             gr.update(),
             gr.update(),
             gr.update(),
-            "No template selected.",
+            _t("no_template_selected"),
         )
-    base_tpl = tpl.get("base_rows") or []
-    hires_tpl = tpl.get("hires_rows") or base_tpl
-    target = target if target in {APPLY_BASE, APPLY_HIRES, APPLY_BOTH} else APPLY_BASE
+    optimization_key = _option_key("optimization", tpl.get("optimization"), OPT_BALANCE)
+    base_shift = tpl.get("base_shift", 3.0)
+    hires_shift = tpl.get("hires_shift", base_shift)
+    base_tpl = _normalize_rows(tpl.get("base_rows") or [], None, base_shift, optimization_key)
+    hires_tpl = _normalize_rows(tpl.get("hires_rows") or base_tpl, None, hires_shift, optimization_key)
+    target = _option_key("apply_target", target, APPLY_BASE)
     out_base = gr.update()
     out_hires = gr.update()
     base_count = gr.update()
@@ -562,15 +742,15 @@ def _apply_template_ui(name, target, base_rows, hires_rows):
         base_count,
         hires_count,
         gr.update(value=tpl.get("hires_independent", False)),
-        gr.update(value=tpl.get("base_shift", 3.0)),
-        gr.update(value=tpl.get("hires_shift", tpl.get("base_shift", 3.0))),
+        gr.update(value=base_shift),
+        gr.update(value=hires_shift),
         gr.update(value=tpl.get("global_strength", 0.7)),
-        gr.update(value=tpl.get("optimization", OPT_BALANCE)),
-        gr.update(value=tpl.get("combine_mode", COMBINE_OUTPUT_AVG)),
-        gr.update(value=tpl.get("fusion_mode", FUSION_INTERPOLATE)),
+        gr.update(value=_option_label("optimization", optimization_key)),
+        gr.update(value=_option_label("combine", tpl.get("combine_mode", COMBINE_OUTPUT_AVG))),
+        gr.update(value=_option_label("fusion", tpl.get("fusion_mode", FUSION_INTERPOLATE))),
         gr.update(value=tpl.get("apply_uncond", False)),
         gr.update(value=tpl.get("enable_cache", True)),
-        f"Applied template `{name}` to {target}.",
+        _t("applied_template").format(name=name, target=_option_label("apply_target", target)),
     )
 
 
@@ -926,7 +1106,8 @@ def _current_prompts(p):
 
 
 def _build_artists(p, rows, num_blocks, shift, optimization, use_cache):
-    rows = _normalize_rows(rows, None, shift, optimization)
+    optimization = _option_key("optimization", optimization, OPT_BALANCE)
+    rows = _normalize_rows(rows, None, shift, optimization, display=False)
     prompts = _current_prompts(p)
     artists = []
     for row in rows:
@@ -950,7 +1131,7 @@ def _build_artists(p, rows, num_blocks, shift, optimization, use_cache):
                     start=_clamp(float(start), 0.0, 1.0),
                     end=_clamp(float(end), 0.0, 1.0),
                     peak=_clamp(float(peak), 0.0, 1.0),
-                    curve=curve if curve in CURVE_CHOICES else CURVE_SMOOTH,
+                    curve=_option_key("curve", curve, CURVE_SMOOTH),
                     cond=cond,
                 )
             )
@@ -958,6 +1139,7 @@ def _build_artists(p, rows, num_blocks, shift, optimization, use_cache):
 
 
 def _optimization_defaults(optimization):
+    optimization = _option_key("optimization", optimization, OPT_BALANCE)
     if optimization == OPT_PERFORMANCE:
         return {"batched": True, "max_artists": 6}
     if optimization == OPT_QUALITY:
@@ -973,12 +1155,17 @@ class Script(scripts.Script):
         return scripts.AlwaysVisible
 
     def ui(self, is_img2img):
+        lang = _language()
+        default_optimization = _option_label("optimization", OPT_BALANCE, lang)
+        default_combine = _option_label("combine", COMBINE_OUTPUT_AVG, lang)
+        default_fusion = _option_label("fusion", FUSION_INTERPOLATE, lang)
+        default_rows = _normalize_rows(_default_rows(3, 3.0, OPT_BALANCE), 3, 3.0, OPT_BALANCE)
         with gr.Accordion(_t("accordion"), open=False, elem_id=self.elem_id("accordion")):
             with gr.Row():
                 intro_language = gr.Radio(
                     choices=["English", "中文"],
                     value="English",
-                    label="Description language / 说明语言",
+                    label=_t("intro_language"),
                     elem_id=self.elem_id("intro_language"),
                 )
             intro = gr.Markdown(value=INTRO_EN, elem_id=self.elem_id("intro"))
@@ -986,31 +1173,31 @@ class Script(scripts.Script):
 
             enable = gr.Checkbox(label=_t("enable"), value=False, elem_id=self.elem_id("enable"))
             with gr.Row():
-                optimization = gr.Dropdown(label=_t("optimization"), choices=OPT_PRESETS, value=OPT_BALANCE, elem_id=self.elem_id("optimization"))
+                optimization = gr.Dropdown(label=_t("optimization"), choices=_option_choices("optimization", lang), value=default_optimization, elem_id=self.elem_id("optimization"))
                 global_strength = gr.Slider(label=_t("global_strength"), minimum=0.0, maximum=2.0, step=0.01, value=0.7, elem_id=self.elem_id("global_strength"))
                 enable_cache = gr.Checkbox(label=_t("cache"), value=True, elem_id=self.elem_id("enable_cache"))
             with gr.Row():
-                combine_mode = gr.Dropdown(label=_t("combine"), choices=[COMBINE_OUTPUT_AVG, COMBINE_CONCAT], value=COMBINE_OUTPUT_AVG, elem_id=self.elem_id("combine_mode"))
-                fusion_mode = gr.Dropdown(label=_t("fusion"), choices=[FUSION_INTERPOLATE, FUSION_CONCAT_WITH_BASE], value=FUSION_INTERPOLATE, elem_id=self.elem_id("fusion_mode"))
+                combine_mode = gr.Dropdown(label=_t("combine"), choices=_option_choices("combine", lang), value=default_combine, elem_id=self.elem_id("combine_mode"))
+                fusion_mode = gr.Dropdown(label=_t("fusion"), choices=_option_choices("fusion", lang), value=default_fusion, elem_id=self.elem_id("fusion_mode"))
                 apply_uncond = gr.Checkbox(label=_t("apply_uncond"), value=False, elem_id=self.elem_id("apply_uncond"))
 
-            with gr.Tab("Base"):
+            with gr.Tab(_t("base_tab")):
                 with gr.Row():
                     base_row_count = gr.Number(label=_t("row_count"), value=3, precision=0, elem_id=self.elem_id("base_row_count"))
                     base_shift = gr.Number(label=_t("base_shift"), value=3.0, precision=4, elem_id=self.elem_id("base_shift"))
                     base_apply_presets = gr.Button(_t("normalize_rows"), elem_id=self.elem_id("base_apply_presets"))
                 base_rows = gr.Dataframe(
                     label=_t("artist_table"),
-                    headers=TABLE_HEADERS,
+                    headers=_table_headers(lang),
                     datatype=TABLE_DATATYPES,
-                    value=_default_rows(3, 3.0, OPT_BALANCE),
+                    value=default_rows,
                     row_count=(3, "dynamic"),
                     col_count=(len(TABLE_HEADERS), "fixed"),
                     interactive=True,
                     elem_id=self.elem_id("base_rows"),
                 )
 
-            with gr.Tab("Hires. fix"):
+            with gr.Tab(_t("hires_tab")):
                 hires_independent = gr.Checkbox(label=_t("hires_independent"), value=False, elem_id=self.elem_id("hires_independent"))
                 with gr.Row():
                     hires_row_count = gr.Number(label=_t("hr_row_count"), value=3, precision=0, elem_id=self.elem_id("hires_row_count"))
@@ -1018,9 +1205,9 @@ class Script(scripts.Script):
                     hires_apply_presets = gr.Button(_t("normalize_rows"), elem_id=self.elem_id("hires_apply_presets"))
                 hires_rows = gr.Dataframe(
                     label=_t("artist_table"),
-                    headers=TABLE_HEADERS,
+                    headers=_table_headers(lang),
                     datatype=TABLE_DATATYPES,
-                    value=_default_rows(3, 3.0, OPT_BALANCE),
+                    value=default_rows,
                     row_count=(3, "dynamic"),
                     col_count=(len(TABLE_HEADERS), "fixed"),
                     interactive=True,
@@ -1030,7 +1217,7 @@ class Script(scripts.Script):
             with gr.Tab(_t("template")):
                 with gr.Row():
                     template_dropdown = gr.Dropdown(label=_t("template"), choices=_template_choices(), value=None, allow_custom_value=False, elem_id=self.elem_id("template_dropdown"))
-                    template_apply_target = gr.Dropdown(label=_t("apply_target"), choices=[APPLY_BASE, APPLY_HIRES, APPLY_BOTH], value=APPLY_BASE, elem_id=self.elem_id("template_apply_target"))
+                    template_apply_target = gr.Dropdown(label=_t("apply_target"), choices=_option_choices("apply_target", lang), value=_option_label("apply_target", APPLY_BASE, lang), elem_id=self.elem_id("template_apply_target"))
                     template_apply = gr.Button(_t("apply_template"), variant="primary", elem_id=self.elem_id("template_apply"))
                 with gr.Row():
                     template_name = gr.Textbox(label=_t("template_name"), value="", elem_id=self.elem_id("template_name"))
@@ -1181,7 +1368,9 @@ class Script(scripts.Script):
             return
         rows = hires_rows if getattr(p, "is_hr_pass", False) and hires_independent else base_rows
         shift = hires_shift if getattr(p, "is_hr_pass", False) and hires_independent else base_shift
-        optimization = optimization if optimization in OPT_PRESETS else OPT_BALANCE
+        optimization = _option_key("optimization", optimization, OPT_BALANCE)
+        combine_mode = _option_key("combine", combine_mode, COMBINE_OUTPUT_AVG)
+        fusion_mode = _option_key("fusion", fusion_mode, FUSION_INTERPOLATE)
         try:
             artists = _build_artists(p, rows, len(dm.blocks), shift, optimization, bool(enable_cache))
         except Exception as exc:
@@ -1198,8 +1387,8 @@ class Script(scripts.Script):
             run_id=uuid.uuid4().hex,
             enabled=True,
             global_strength=_clamp(_to_float(global_strength, 0.7), 0.0, 2.0),
-            combine_mode=combine_mode if combine_mode in {COMBINE_OUTPUT_AVG, COMBINE_CONCAT} else COMBINE_OUTPUT_AVG,
-            fusion_mode=fusion_mode if fusion_mode in {FUSION_INTERPOLATE, FUSION_CONCAT_WITH_BASE} else FUSION_INTERPOLATE,
+            combine_mode=combine_mode,
+            fusion_mode=fusion_mode,
             apply_uncond=bool(apply_uncond),
             batched=bool(defaults["batched"]),
             artists=artists,

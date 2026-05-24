@@ -49,6 +49,8 @@ APPLY_BASE = "Base"
 APPLY_HIRES = "Hires"
 APPLY_BOTH = "Both"
 
+MAX_ARTIST_ROWS = 32
+
 TABLE_HEADERS = [
     "Enabled",
     "Artist",
@@ -167,7 +169,9 @@ LANG = {
         "cache": "启用文本编码缓存",
         "template": "模板",
         "template_name": "模板名称",
-        "save_template": "保存当前设置为模板",
+        "save_base_template": "保存底图画师串设置",
+        "save_hires_template": "保存高分辨率修复模板",
+        "hires_template_disabled": "请先开启“高分辨率修复使用独立画师串”，再保存高分辨率修复模板。",
         "rename_to": "重命名为",
         "rename_template": "重命名模板",
         "delete_template": "删除模板",
@@ -177,7 +181,8 @@ LANG = {
         "help": "说明",
         "status": "状态",
         "empty_template_name": "模板名称为空。",
-        "saved_template": "已保存模板：{name}",
+        "saved_base_template": "已保存底图画师串模板：{name}",
+        "saved_hires_template": "已保存高分辨率修复模板：{name}",
         "no_template_selected": "未选择模板。",
         "new_template_name_empty": "新模板名称为空。",
         "renamed_template": "已重命名模板为：{name}",
@@ -211,7 +216,9 @@ LANG = {
         "cache": "Enable text-encoding cache",
         "template": "Template",
         "template_name": "Template name",
-        "save_template": "Save current settings as template",
+        "save_base_template": "Save base artist-chain settings",
+        "save_hires_template": "Save Hires. fix template",
+        "hires_template_disabled": "Enable independent Hires. fix artist chain before saving a Hires. fix template.",
         "rename_to": "Rename to",
         "rename_template": "Rename template",
         "delete_template": "Delete template",
@@ -221,7 +228,8 @@ LANG = {
         "help": "Guide",
         "status": "Status",
         "empty_template_name": "Template name is empty.",
-        "saved_template": "Saved template: {name}",
+        "saved_base_template": "Saved base artist-chain template: {name}",
+        "saved_hires_template": "Saved Hires. fix template: {name}",
         "no_template_selected": "No template selected.",
         "new_template_name_empty": "New template name is empty.",
         "renamed_template": "Renamed template to: {name}",
@@ -371,6 +379,23 @@ def _table_headers(language=None):
     return [TABLE_HEADER_LABELS[h].get(language, h) for h in TABLE_HEADERS]
 
 
+def _row_component_headers(language=None):
+    language = language or _language()
+    headers = TABLE_HEADER_LABELS
+    return {
+        "enabled": headers["Enabled"].get(language, "Enabled"),
+        "artist": headers["Artist"].get(language, "Artist"),
+        "weight": headers["Weight"].get(language, "Weight"),
+        "blocks": headers["Blocks"].get(language, "Blocks"),
+        "start": headers["Start"].get(language, "Start"),
+        "end": headers["End"].get(language, "End"),
+        "peak": headers["Peak"].get(language, "Peak"),
+        "curve": headers["Curve"].get(language, "Curve"),
+        "stage": headers["Stage"].get(language, "Stage"),
+        "auto_shift": headers["Auto Shift"].get(language, "Auto Shift"),
+    }
+
+
 def _header_key(value):
     text = str(value or "").strip()
     if text in TABLE_HEADERS:
@@ -406,6 +431,84 @@ def _rows_for_display(rows, language=None):
 
 def _rows_for_storage(rows, shift=3.0, optimization=OPT_BALANCE):
     return _normalize_rows(rows, None, shift, optimization, display=False)
+
+
+def _rows_from_components(*values):
+    rows = []
+    per_row = 10
+    for index in range(0, len(values), per_row):
+        chunk = list(values[index : index + per_row])
+        if len(chunk) < per_row:
+            break
+        rows.append(chunk)
+    return rows
+
+
+def _component_values_from_rows(rows, shift=3.0, optimization=OPT_BALANCE, count=None):
+    normalized = _normalize_rows(rows, MAX_ARTIST_ROWS, shift, optimization, display=True)
+    if count is None:
+        count = len(_coerce_table(rows)) or 1
+    count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(count, 1))))
+    updates = []
+    for index, row in enumerate(normalized):
+        visible = index < count
+        updates.extend(
+            [
+                gr.update(value=row[0], visible=visible),
+                gr.update(value=row[1], visible=visible),
+                gr.update(value=row[2], visible=visible),
+                gr.update(value=row[3], visible=visible),
+                gr.update(value=row[4], visible=visible),
+                gr.update(value=row[5], visible=visible),
+                gr.update(value=row[6], visible=visible),
+                gr.update(value=row[7], visible=visible),
+                gr.update(value=row[8], visible=visible),
+                gr.update(value=row[9], visible=visible),
+            ]
+        )
+    return updates
+
+
+def _resize_row_components(count, shift, optimization, *values):
+    rows = _rows_from_components(*values)
+    count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(count, len(rows) or 1))))
+    return _component_values_from_rows(rows, shift, optimization, count)
+
+
+def _apply_shift_to_components(count, shift, optimization, *values):
+    rows = _rows_from_components(*values)
+    count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(count, len(rows) or 1))))
+    return _component_values_from_rows(rows, shift, optimization, count)
+
+
+def _active_rows_from_components(count, shift, optimization, *values, display=False):
+    rows = _rows_from_components(*values)
+    count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(count, len(rows) or 1))))
+    return _normalize_rows(rows, count, shift, optimization, display=display)
+
+
+def _create_artist_row_controls(prefix, lang, defaults, elem_id_func):
+    labels = _row_component_headers(lang)
+    components = []
+    bool_choices = [_bool_label(True, lang), _bool_label(False, lang)]
+    curve_choices = _option_choices("curve", lang)
+    stage_choices = _option_choices("stage", lang)
+    for index in range(MAX_ARTIST_ROWS):
+        row = defaults[index] if index < len(defaults) else _normalize_rows([_default_rows(1, 3.0, OPT_BALANCE)[0]], 1, 3.0, OPT_BALANCE)[0]
+        visible = index < len(defaults)
+        with gr.Row(elem_id=elem_id_func(f"{prefix}_artist_row_{index}")):
+            enabled = gr.Dropdown(label=labels["enabled"], choices=bool_choices, value=row[0], allow_custom_value=False, min_width=82, visible=visible, elem_id=elem_id_func(f"{prefix}_enabled_{index}"))
+            artist = gr.Textbox(label=labels["artist"], value=row[1], lines=1, min_width=190, visible=visible, elem_id=elem_id_func(f"{prefix}_artist_{index}"))
+            weight = gr.Number(label=labels["weight"], value=row[2], precision=4, min_width=92, visible=visible, elem_id=elem_id_func(f"{prefix}_weight_{index}"))
+            blocks = gr.Textbox(label=labels["blocks"], value=row[3], lines=1, min_width=116, visible=visible, elem_id=elem_id_func(f"{prefix}_blocks_{index}"))
+            start = gr.Number(label=labels["start"], value=row[4], precision=4, min_width=86, visible=visible, elem_id=elem_id_func(f"{prefix}_start_{index}"))
+            end = gr.Number(label=labels["end"], value=row[5], precision=4, min_width=86, visible=visible, elem_id=elem_id_func(f"{prefix}_end_{index}"))
+            peak = gr.Number(label=labels["peak"], value=row[6], precision=4, min_width=86, visible=visible, elem_id=elem_id_func(f"{prefix}_peak_{index}"))
+            curve = gr.Dropdown(label=labels["curve"], choices=curve_choices, value=row[7], allow_custom_value=False, min_width=130, visible=visible, elem_id=elem_id_func(f"{prefix}_curve_{index}"))
+            stage = gr.Dropdown(label=labels["stage"], choices=stage_choices, value=row[8], allow_custom_value=False, min_width=130, visible=visible, elem_id=elem_id_func(f"{prefix}_stage_{index}"))
+            auto_shift = gr.Dropdown(label=labels["auto_shift"], choices=bool_choices, value=row[9], allow_custom_value=False, min_width=112, visible=visible, elem_id=elem_id_func(f"{prefix}_auto_shift_{index}"))
+        components.extend([enabled, artist, weight, blocks, start, end, peak, curve, stage, auto_shift])
+    return components
 
 
 def _register_ui_settings():
@@ -656,16 +759,6 @@ def _normalize_rows(value, row_count=None, shift=3.0, optimization=OPT_BALANCE, 
     return normalized
 
 
-def _resize_table(value, count, shift, optimization):
-    rows = _normalize_rows(value, count, shift, optimization)
-    return gr.update(value=rows, row_count=(max(1, len(rows)), "dynamic"))
-
-
-def _apply_shift_to_rows(value, shift, optimization):
-    rows = _coerce_table(value)
-    return gr.update(value=_normalize_rows(rows, len(rows) or 1, shift, optimization))
-
-
 def _template_data():
     if not TEMPLATE_FILE.exists():
         return {}
@@ -695,20 +788,21 @@ def _template_dropdown_update(value=None):
     return gr.update(choices=choices, value=value)
 
 
-def _save_template_ui(name, base_rows, hires_rows, hires_independent, base_shift, hires_shift, global_strength, optimization, combine_mode, fusion_mode, apply_uncond, enable_cache):
+def _save_template_record(name, row_key, rows, row_count, shift, global_strength, optimization, combine_mode, fusion_mode, apply_uncond, enable_cache, status_key):
     name = str(name or "").strip()
     if not name:
         return _template_dropdown_update(), _t("empty_template_name")
     optimization_key = _option_key("optimization", optimization, OPT_BALANCE)
     combine_key = _option_key("combine", combine_mode, COMBINE_OUTPUT_AVG)
     fusion_key = _option_key("fusion", fusion_mode, FUSION_INTERPOLATE)
+    row_count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(row_count, len(_coerce_table(rows)) or 1))))
+    shift = _to_float(shift, 3.0)
     data = _template_data()
     data[name] = {
-        "base_rows": _rows_for_storage(base_rows, base_shift, optimization_key),
-        "hires_rows": _rows_for_storage(hires_rows, hires_shift, optimization_key),
-        "hires_independent": bool(hires_independent),
-        "base_shift": _to_float(base_shift, 3.0),
-        "hires_shift": _to_float(hires_shift, 3.0),
+        row_key: _normalize_rows(rows, row_count, shift, optimization_key, display=False),
+        "hires_independent": row_key == "hires_rows",
+        "base_shift": shift if row_key == "base_rows" else 3.0,
+        "hires_shift": shift if row_key == "hires_rows" else 3.0,
         "global_strength": _to_float(global_strength, 0.7),
         "optimization": optimization_key,
         "combine_mode": combine_key,
@@ -717,7 +811,45 @@ def _save_template_ui(name, base_rows, hires_rows, hires_independent, base_shift
         "enable_cache": bool(enable_cache),
     }
     _save_template_data(data)
-    return _template_dropdown_update(name), _t("saved_template").format(name=name)
+    return _template_dropdown_update(name), _t(status_key).format(name=name)
+
+
+def _save_base_template_ui(name, base_row_count, base_shift, global_strength, optimization, combine_mode, fusion_mode, apply_uncond, enable_cache, *base_values):
+    base_rows = _rows_from_components(*base_values)
+    return _save_template_record(
+        name,
+        "base_rows",
+        base_rows,
+        base_row_count,
+        base_shift,
+        global_strength,
+        optimization,
+        combine_mode,
+        fusion_mode,
+        apply_uncond,
+        enable_cache,
+        "saved_base_template",
+    )
+
+
+def _save_hires_template_ui(name, hires_independent, hires_row_count, hires_shift, global_strength, optimization, combine_mode, fusion_mode, apply_uncond, enable_cache, *hires_values):
+    if not _to_bool(hires_independent, False):
+        return _template_dropdown_update(), _t("hires_template_disabled")
+    hires_rows = _rows_from_components(*hires_values)
+    return _save_template_record(
+        name,
+        "hires_rows",
+        hires_rows,
+        hires_row_count,
+        hires_shift,
+        global_strength,
+        optimization,
+        combine_mode,
+        fusion_mode,
+        apply_uncond,
+        enable_cache,
+        "saved_hires_template",
+    )
 
 
 def _rename_template_ui(old_name, new_name):
@@ -743,47 +875,62 @@ def _delete_template_ui(name):
     return _template_dropdown_update(), _t("no_template_deleted")
 
 
-def _apply_template_ui(name, target, base_rows, hires_rows):
+def _apply_template_ui(name, target, base_row_count, hires_row_count, current_base_shift, current_hires_shift, current_optimization, *component_values):
+    base_values = component_values[: MAX_ARTIST_ROWS * 10]
+    hires_values = component_values[MAX_ARTIST_ROWS * 10 : MAX_ARTIST_ROWS * 20]
+    base_current = _rows_from_components(*base_values)
+    hires_current = _rows_from_components(*hires_values)
+    no_selection = (
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        _t("no_template_selected"),
+        *[gr.update() for _ in range(MAX_ARTIST_ROWS * 20)],
+    )
     data = _template_data()
     tpl = data.get(str(name or "").strip())
     if not isinstance(tpl, dict):
-        return (
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            _t("no_template_selected"),
-        )
+        return no_selection
     optimization_key = _option_key("optimization", tpl.get("optimization"), OPT_BALANCE)
-    base_shift = tpl.get("base_shift", 3.0)
-    hires_shift = tpl.get("hires_shift", base_shift)
-    base_tpl = _normalize_rows(tpl.get("base_rows") or [], None, base_shift, optimization_key)
-    hires_tpl = _normalize_rows(tpl.get("hires_rows") or base_tpl, None, hires_shift, optimization_key)
+    tpl_base_shift = _to_float(tpl.get("base_shift", 3.0), 3.0)
+    tpl_hires_shift = _to_float(tpl.get("hires_shift", tpl_base_shift), tpl_base_shift)
+    has_base_rows = bool(tpl.get("base_rows"))
+    has_hires_rows = bool(tpl.get("hires_rows"))
+    base_shift = tpl_base_shift if has_base_rows or not has_hires_rows else tpl_hires_shift
+    hires_shift = tpl_hires_shift if has_hires_rows or not has_base_rows else tpl_base_shift
+    fallback_optimization = _option_key("optimization", current_optimization, OPT_BALANCE)
+    base_tpl = _normalize_rows(
+        tpl.get("base_rows") or tpl.get("hires_rows") or base_current,
+        None,
+        base_shift if has_base_rows or has_hires_rows else current_base_shift,
+        optimization_key if has_base_rows or has_hires_rows else fallback_optimization,
+    )
+    hires_tpl = _normalize_rows(
+        tpl.get("hires_rows") or tpl.get("base_rows") or hires_current,
+        None,
+        hires_shift if has_hires_rows or has_base_rows else current_hires_shift,
+        optimization_key if has_hires_rows or has_base_rows else fallback_optimization,
+    )
     target = _option_key("apply_target", target, APPLY_BASE)
-    out_base = gr.update()
-    out_hires = gr.update()
-    base_count = gr.update()
-    hires_count = gr.update()
+    base_count_value = max(1, len(base_tpl)) if target in {APPLY_BASE, APPLY_BOTH} else max(1, int(_to_float(base_row_count, 1)))
+    hires_count_value = max(1, len(hires_tpl)) if target in {APPLY_HIRES, APPLY_BOTH} else max(1, int(_to_float(hires_row_count, 1)))
+    base_updates = [gr.update() for _ in range(MAX_ARTIST_ROWS * 10)]
+    hires_updates = [gr.update() for _ in range(MAX_ARTIST_ROWS * 10)]
     if target in {APPLY_BASE, APPLY_BOTH}:
-        out_base = gr.update(value=base_tpl, row_count=(max(1, len(base_tpl)), "dynamic"))
-        base_count = gr.update(value=max(1, len(base_tpl)))
+        base_updates = _component_values_from_rows(base_tpl, base_shift, optimization_key, base_count_value)
     if target in {APPLY_HIRES, APPLY_BOTH}:
-        out_hires = gr.update(value=hires_tpl, row_count=(max(1, len(hires_tpl)), "dynamic"))
-        hires_count = gr.update(value=max(1, len(hires_tpl)))
+        hires_updates = _component_values_from_rows(hires_tpl, hires_shift, optimization_key, hires_count_value)
     return (
-        out_base,
-        out_hires,
-        base_count,
-        hires_count,
+        gr.update(value=base_count_value),
+        gr.update(value=hires_count_value),
         gr.update(value=tpl.get("hires_independent", False)),
         gr.update(value=base_shift),
         gr.update(value=hires_shift),
@@ -794,6 +941,8 @@ def _apply_template_ui(name, target, base_rows, hires_rows):
         gr.update(value=tpl.get("apply_uncond", False)),
         gr.update(value=tpl.get("enable_cache", True)),
         _t("applied_template").format(name=name, target=_option_label("apply_target", target)),
+        *base_updates,
+        *hires_updates,
     )
 
 
@@ -1204,7 +1353,6 @@ class Script(scripts.Script):
         default_fusion = _option_label("fusion", FUSION_INTERPOLATE, lang)
         default_rows = _normalize_rows(_default_rows(3, 3.0, OPT_BALANCE), 3, 3.0, OPT_BALANCE)
         intro_default_choice = _language_choice(lang)
-        table_column_widths = ["88px", "180px", "96px", "120px", "96px", "96px", "96px", "140px", "140px", "120px"]
         table_css = f"""
         <style>
         #{self.elem_id("accordion")} [data-testid="sort-button"],
@@ -1243,17 +1391,8 @@ class Script(scripts.Script):
                     base_row_count = gr.Number(label=_t("row_count"), value=3, precision=0, elem_id=self.elem_id("base_row_count"))
                     base_shift = gr.Number(label=_t("base_shift"), value=3.0, precision=4, elem_id=self.elem_id("base_shift"))
                     base_apply_presets = gr.Button(_t("normalize_rows"), elem_id=self.elem_id("base_apply_presets"))
-                base_rows = gr.Dataframe(
-                    label=_t("artist_table"),
-                    headers=_table_headers(lang),
-                    datatype=TABLE_DATATYPES,
-                    value=default_rows,
-                    row_count=(3, "dynamic"),
-                    col_count=(len(TABLE_HEADERS), "fixed"),
-                    column_widths=table_column_widths,
-                    interactive=True,
-                    elem_id=self.elem_id("base_rows"),
-                )
+                gr.Markdown(value=f"**{_t('artist_table')}**")
+                base_row_components = _create_artist_row_controls("base", lang, default_rows, self.elem_id)
 
             with gr.Tab(_t("hires_tab")):
                 hires_independent = gr.Checkbox(label=_t("hires_independent"), value=False, elem_id=self.elem_id("hires_independent"))
@@ -1261,17 +1400,8 @@ class Script(scripts.Script):
                     hires_row_count = gr.Number(label=_t("hr_row_count"), value=3, precision=0, elem_id=self.elem_id("hires_row_count"))
                     hires_shift = gr.Number(label=_t("hires_shift"), value=3.0, precision=4, elem_id=self.elem_id("hires_shift"))
                     hires_apply_presets = gr.Button(_t("normalize_rows"), elem_id=self.elem_id("hires_apply_presets"))
-                hires_rows = gr.Dataframe(
-                    label=_t("artist_table"),
-                    headers=_table_headers(lang),
-                    datatype=TABLE_DATATYPES,
-                    value=default_rows,
-                    row_count=(3, "dynamic"),
-                    col_count=(len(TABLE_HEADERS), "fixed"),
-                    column_widths=table_column_widths,
-                    interactive=True,
-                    elem_id=self.elem_id("hires_rows"),
-                )
+                gr.Markdown(value=f"**{_t('artist_table')}**")
+                hires_row_components = _create_artist_row_controls("hires", lang, default_rows, self.elem_id)
 
             with gr.Tab(_t("template")):
                 with gr.Row():
@@ -1280,7 +1410,8 @@ class Script(scripts.Script):
                     template_apply = gr.Button(_t("apply_template"), variant="primary", elem_id=self.elem_id("template_apply"))
                 with gr.Row():
                     template_name = gr.Textbox(label=_t("template_name"), value="", elem_id=self.elem_id("template_name"))
-                    template_save = gr.Button(_t("save_template"), elem_id=self.elem_id("template_save"))
+                    template_save_base = gr.Button(_t("save_base_template"), elem_id=self.elem_id("template_save_base"))
+                    template_save_hires = gr.Button(_t("save_hires_template"), elem_id=self.elem_id("template_save_hires"))
                 with gr.Row():
                     rename_to = gr.Textbox(label=_t("rename_to"), value="", elem_id=self.elem_id("rename_to"))
                     rename_button = gr.Button(_t("rename_template"), elem_id=self.elem_id("rename_button"))
@@ -1291,55 +1422,71 @@ class Script(scripts.Script):
                 gr.Markdown(value=HELP_ZH if _language() == "zh" else HELP_EN)
 
         base_row_count.change(
-            fn=_resize_table,
-            inputs=[base_rows, base_row_count, base_shift, optimization],
-            outputs=[base_rows],
+            fn=_resize_row_components,
+            inputs=[base_row_count, base_shift, optimization, *base_row_components],
+            outputs=base_row_components,
             queue=False,
             show_progress=False,
         )
         hires_row_count.change(
-            fn=_resize_table,
-            inputs=[hires_rows, hires_row_count, hires_shift, optimization],
-            outputs=[hires_rows],
+            fn=_resize_row_components,
+            inputs=[hires_row_count, hires_shift, optimization, *hires_row_components],
+            outputs=hires_row_components,
             queue=False,
             show_progress=False,
         )
         base_shift.change(
-            fn=_apply_shift_to_rows,
-            inputs=[base_rows, base_shift, optimization],
-            outputs=[base_rows],
+            fn=_apply_shift_to_components,
+            inputs=[base_row_count, base_shift, optimization, *base_row_components],
+            outputs=base_row_components,
             queue=False,
             show_progress=False,
         )
         hires_shift.change(
-            fn=_apply_shift_to_rows,
-            inputs=[hires_rows, hires_shift, optimization],
-            outputs=[hires_rows],
+            fn=_apply_shift_to_components,
+            inputs=[hires_row_count, hires_shift, optimization, *hires_row_components],
+            outputs=hires_row_components,
             queue=False,
             show_progress=False,
         )
         base_apply_presets.click(
-            fn=_resize_table,
-            inputs=[base_rows, base_row_count, base_shift, optimization],
-            outputs=[base_rows],
+            fn=_resize_row_components,
+            inputs=[base_row_count, base_shift, optimization, *base_row_components],
+            outputs=base_row_components,
             queue=False,
             show_progress=False,
         )
         hires_apply_presets.click(
-            fn=_resize_table,
-            inputs=[hires_rows, hires_row_count, hires_shift, optimization],
-            outputs=[hires_rows],
+            fn=_resize_row_components,
+            inputs=[hires_row_count, hires_shift, optimization, *hires_row_components],
+            outputs=hires_row_components,
             queue=False,
             show_progress=False,
         )
-        template_save.click(
-            fn=_save_template_ui,
+        template_save_base.click(
+            fn=_save_base_template_ui,
             inputs=[
                 template_name,
-                base_rows,
-                hires_rows,
-                hires_independent,
+                base_row_count,
                 base_shift,
+                global_strength,
+                optimization,
+                combine_mode,
+                fusion_mode,
+                apply_uncond,
+                enable_cache,
+                *base_row_components,
+            ],
+            outputs=[template_dropdown, template_status],
+            queue=False,
+            show_progress=False,
+        )
+        template_save_hires.click(
+            fn=_save_hires_template_ui,
+            inputs=[
+                template_name,
+                hires_independent,
+                hires_row_count,
                 hires_shift,
                 global_strength,
                 optimization,
@@ -1347,6 +1494,7 @@ class Script(scripts.Script):
                 fusion_mode,
                 apply_uncond,
                 enable_cache,
+                *hires_row_components,
             ],
             outputs=[template_dropdown, template_status],
             queue=False,
@@ -1356,10 +1504,8 @@ class Script(scripts.Script):
         delete_button.click(fn=_delete_template_ui, inputs=[template_dropdown], outputs=[template_dropdown, template_status], queue=False, show_progress=False)
         template_apply.click(
             fn=_apply_template_ui,
-            inputs=[template_dropdown, template_apply_target, base_rows, hires_rows],
+            inputs=[template_dropdown, template_apply_target, base_row_count, hires_row_count, base_shift, hires_shift, optimization, *base_row_components, *hires_row_components],
             outputs=[
-                base_rows,
-                hires_rows,
                 base_row_count,
                 hires_row_count,
                 hires_independent,
@@ -1372,6 +1518,8 @@ class Script(scripts.Script):
                 apply_uncond,
                 enable_cache,
                 template_status,
+                *base_row_components,
+                *hires_row_components,
             ],
             queue=False,
             show_progress=False,
@@ -1379,8 +1527,8 @@ class Script(scripts.Script):
 
         return [
             enable,
-            base_rows,
-            hires_rows,
+            base_row_count,
+            hires_row_count,
             hires_independent,
             base_shift,
             hires_shift,
@@ -1390,6 +1538,8 @@ class Script(scripts.Script):
             fusion_mode,
             apply_uncond,
             enable_cache,
+            *base_row_components,
+            *hires_row_components,
         ]
 
     def process_before_every_sampling(self, p, *args, **kwargs):
@@ -1398,8 +1548,8 @@ class Script(scripts.Script):
             return
         (
             enable,
-            base_rows,
-            hires_rows,
+            base_row_count,
+            hires_row_count,
             hires_independent,
             base_shift,
             hires_shift,
@@ -1410,6 +1560,9 @@ class Script(scripts.Script):
             apply_uncond,
             enable_cache,
         ) = args[:12]
+        component_values = args[12:]
+        base_values = component_values[: MAX_ARTIST_ROWS * 10]
+        hires_values = component_values[MAX_ARTIST_ROWS * 10 : MAX_ARTIST_ROWS * 20]
 
         _unpatch_cross_attn()
         _ACTIVE_STATE = None
@@ -1425,6 +1578,8 @@ class Script(scripts.Script):
         if dm is None:
             logger.warning("Anima artist mixer disabled: %s", msg)
             return
+        base_rows = _active_rows_from_components(base_row_count, base_shift, optimization, *base_values, display=False)
+        hires_rows = _active_rows_from_components(hires_row_count, hires_shift, optimization, *hires_values, display=False)
         rows = hires_rows if getattr(p, "is_hr_pass", False) and hires_independent else base_rows
         shift = hires_shift if getattr(p, "is_hr_pass", False) and hires_independent else base_shift
         optimization = _option_key("optimization", optimization, OPT_BALANCE)

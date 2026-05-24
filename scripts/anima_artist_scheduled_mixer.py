@@ -17,7 +17,6 @@ logger = logging.getLogger("anima_artist_scheduled_mixer")
 
 EXTENSION_DIR = Path(__file__).resolve().parents[1]
 TEMPLATE_FILE = EXTENSION_DIR / "artist_mixer_templates.json"
-INTRO_LANGUAGE_FILE = EXTENSION_DIR / "intro_language.json"
 REFERENCE_URL = "https://github.com/An1X3R/Anima-Artist-Mixer"
 
 LANGUAGE_OPTION = "anima_artist_scheduled_mixer_language"
@@ -146,7 +145,9 @@ LANG = {
         "title": "Anima 画师串调度混合",
         "accordion": "Anima 画师串调度混合",
         "settings_label": "Anima 画师串调度混合界面语言",
-        "intro_language": "说明语言",
+        "intro_language": "界面语言",
+        "language_saved": "界面语言已保存。说明已立即切换；完整控件文字将在 Reload UI 或下次启动后生效。",
+        "language_save_failed": "界面语言保存失败，请检查控制台日志。",
         "enable": "启用画师串混合",
         "base_tab": "底图",
         "hires_tab": "高分修复",
@@ -188,7 +189,9 @@ LANG = {
         "title": "Anima Artist Scheduled Mixer",
         "accordion": "Anima Artist Scheduled Mixer",
         "settings_label": "Anima Artist Scheduled Mixer UI language",
-        "intro_language": "Description language",
+        "intro_language": "UI language",
+        "language_saved": "UI language saved. The guide switched immediately; all control labels update after Reload UI or the next startup.",
+        "language_save_failed": "Failed to save UI language. Check the console log.",
         "enable": "Enable artist mixing",
         "base_tab": "Base",
         "hires_tab": "Hires. fix",
@@ -296,33 +299,36 @@ def _t(key):
     return LANG.get(_language(), LANG["zh"]).get(key, key)
 
 
-def _intro_text(language):
-    return INTRO_ZH if language == "中文" else INTRO_EN
+def _choice_to_language(language):
+    if language in LANGUAGE_CHOICES:
+        return language
+    return "zh" if language == "中文" else "en"
 
 
-def _intro_choice(language=None):
-    fallback = "中文" if (language or _language()) == "zh" else "English"
-    try:
-        with INTRO_LANGUAGE_FILE.open("r", encoding="utf-8") as f:
-            value = json.load(f).get("language")
-        return value if value in {"English", "中文"} else fallback
-    except Exception:
-        return fallback
+def _language_choice(language=None):
+    return "中文" if _choice_to_language(language or _language()) == "zh" else "English"
+
+
+def _intro_text(language=None):
+    return INTRO_ZH if _choice_to_language(language or _language()) == "zh" else INTRO_EN
 
 
 def _intro_default(language=None):
-    return _intro_text(_intro_choice(language))
+    return _intro_text(language or _language())
 
 
-def _save_intro_language(language):
-    choice = "中文" if language == "中文" else "English"
+def _save_ui_language(language):
+    language_code = _choice_to_language(language)
     try:
-        INTRO_LANGUAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with INTRO_LANGUAGE_FILE.open("w", encoding="utf-8") as f:
-            json.dump({"language": choice}, f, ensure_ascii=False, indent=2)
+        if LANGUAGE_OPTION in shared.opts.data_labels:
+            shared.opts.set(LANGUAGE_OPTION, language_code, run_callbacks=False)
+        else:
+            shared.opts.data[LANGUAGE_OPTION] = language_code
+        shared.opts.save(shared.config_filename)
+        return _intro_text(language_code), LANG[language_code]["language_saved"]
     except Exception:
-        logger.exception("Failed to save Anima artist mixer intro language")
-    return _intro_text(choice)
+        logger.exception("Failed to save Anima artist mixer UI language")
+        return _intro_text(language_code), LANG[language_code]["language_save_failed"]
 
 
 def _bool_label(value, language=None):
@@ -1197,7 +1203,7 @@ class Script(scripts.Script):
         default_combine = _option_label("combine", COMBINE_OUTPUT_AVG, lang)
         default_fusion = _option_label("fusion", FUSION_INTERPOLATE, lang)
         default_rows = _normalize_rows(_default_rows(3, 3.0, OPT_BALANCE), 3, 3.0, OPT_BALANCE)
-        intro_default_choice = _intro_choice(lang)
+        intro_default_choice = _language_choice(lang)
         table_column_widths = ["88px", "180px", "96px", "120px", "96px", "96px", "96px", "140px", "140px", "120px"]
         table_css = f"""
         <style>
@@ -1219,7 +1225,8 @@ class Script(scripts.Script):
                     elem_id=self.elem_id("intro_language"),
                 )
             intro = gr.Markdown(value=_intro_default(lang), elem_id=self.elem_id("intro"))
-            intro_language.change(fn=_save_intro_language, inputs=[intro_language], outputs=[intro], queue=False, show_progress=False)
+            intro_status = gr.Markdown(value="", elem_id=self.elem_id("intro_status"))
+            intro_language.change(fn=_save_ui_language, inputs=[intro_language], outputs=[intro, intro_status], queue=False, show_progress=False)
 
             enable = gr.Checkbox(label=_t("enable"), value=False, elem_id=self.elem_id("enable"))
             with gr.Row():

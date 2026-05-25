@@ -532,16 +532,57 @@ def _component_values_from_rows(rows, shift=3.0, optimization=OPT_BALANCE, count
     return updates
 
 
+def _timing_values_from_rows(rows, shift=3.0, optimization=OPT_BALANCE, count=None):
+    normalized = _normalize_rows(rows, MAX_ARTIST_ROWS, shift, optimization, display=True)
+    if count is None:
+        count = len(_coerce_table(rows)) or 1
+    count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(count, 1))))
+    updates = []
+    for index, row in enumerate(normalized):
+        if index < count:
+            updates.extend(
+                [
+                    gr.update(value=row[4], interactive=True),
+                    gr.update(value=row[5], interactive=True),
+                    gr.update(value=row[6], interactive=True),
+                ]
+            )
+        else:
+            updates.extend([gr.update(), gr.update(), gr.update()])
+    return updates
+
+
+def _block_timing_values_from_rows(rows, shift=3.0, optimization=OPT_BALANCE, count=None):
+    normalized = _normalize_rows(rows, MAX_ARTIST_ROWS, shift, optimization, display=True)
+    if count is None:
+        count = len(_coerce_table(rows)) or 1
+    count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(count, 1))))
+    updates = []
+    for index, row in enumerate(normalized):
+        if index < count:
+            updates.extend(
+                [
+                    gr.update(value=row[3], interactive=True),
+                    gr.update(value=row[4], interactive=True),
+                    gr.update(value=row[5], interactive=True),
+                    gr.update(value=row[6], interactive=True),
+                ]
+            )
+        else:
+            updates.extend([gr.update(), gr.update(), gr.update(), gr.update()])
+    return updates
+
+
 def _resize_row_components(count, shift, optimization, *values):
     rows = _rows_from_components(*values)
     count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(count, len(rows) or 1))))
     return _component_values_from_rows(rows, shift, optimization, count)
 
 
-def _apply_shift_to_components(count, shift, optimization, *values):
+def _apply_shift_to_timing_components(count, shift, optimization, *values):
     rows = _rows_from_components(*values)
     count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(count, len(rows) or 1))))
-    return _component_values_from_rows(rows, shift, optimization, count)
+    return _timing_values_from_rows(rows, shift, optimization, count)
 
 
 def _default_blocks_for_optimization(optimization):
@@ -551,7 +592,7 @@ def _default_blocks_for_optimization(optimization):
     return "0-27"
 
 
-def _apply_optimization_to_components(count, shift, optimization, *values):
+def _apply_optimization_to_block_timing_components(count, shift, optimization, *values):
     rows = _rows_from_components(*values)
     count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(count, len(rows) or 1))))
     blocks = _default_blocks_for_optimization(optimization)
@@ -562,10 +603,10 @@ def _apply_optimization_to_components(count, shift, optimization, *values):
         if _to_bool(row[9], True) and _option_key("stage", row[8], PRESET_CUSTOM) != PRESET_CUSTOM:
             row[4], row[5], row[6] = _auto_stage_values(row[8], shift)
         rows[index] = row
-    return _component_values_from_rows(rows, shift, optimization, count)
+    return _block_timing_values_from_rows(rows, shift, optimization, count)
 
 
-def _apply_stage_to_components(row_index, count, shift, optimization, *values):
+def _apply_stage_to_row_components(row_index, count, shift, optimization, *values):
     rows = _rows_from_components(*values)
     count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(count, len(rows) or 1))))
     if 0 <= row_index < len(rows):
@@ -578,8 +619,29 @@ def _apply_stage_to_components(row_index, count, shift, optimization, *values):
             start, end, peak = _auto_stage_values(stage, shift)
             row[4], row[5], row[6] = start, end, peak
             row[9] = True
-        rows[row_index] = row
-    return _component_values_from_rows(rows, shift, optimization, count)
+        normalized = _normalize_rows([row], 1, shift, optimization, display=True)[0]
+        return [
+            gr.update(value=normalized[4], interactive=True),
+            gr.update(value=normalized[5], interactive=True),
+            gr.update(value=normalized[6], interactive=True),
+            gr.update(value=normalized[9], interactive=True),
+        ]
+    return [gr.update(), gr.update(), gr.update(), gr.update()]
+
+
+def _apply_auto_shift_to_row_components(row_index, count, shift, optimization, *values):
+    rows = _rows_from_components(*values)
+    count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(count, len(rows) or 1))))
+    if not (0 <= row_index < min(count, len(rows))):
+        return [gr.update(), gr.update(), gr.update()]
+    row = list(rows[row_index])
+    row += [None] * (len(TABLE_HEADERS) - len(row))
+    normalized = _normalize_rows([row], 1, shift, optimization, display=True)[0]
+    return [
+        gr.update(value=normalized[4], interactive=True),
+        gr.update(value=normalized[5], interactive=True),
+        gr.update(value=normalized[6], interactive=True),
+    ]
 
 
 def _active_rows_from_components(count, shift, optimization, *values, display=False):
@@ -680,6 +742,10 @@ def _create_artist_row_controls(prefix, lang, defaults, elem_id_func):
             auto_shift = gr.Dropdown(label=labels["auto_shift"], choices=bool_choices, value=row[9], allow_custom_value=False, min_width=112, visible=visible, elem_id=elem_id_func(f"{prefix}_auto_shift_{index}"))
         components.extend([enabled, artist, weight, blocks, start, end, peak, curve, stage, auto_shift])
     return components
+
+
+def _row_outputs(row_components, offsets):
+    return [row_components[index + offset] for index in range(0, len(row_components), 10) for offset in offsets]
 
 
 def _register_ui_settings():
@@ -1860,16 +1926,16 @@ class Script(scripts.Script):
             show_progress=False,
         )
         runtime_base_shift.change(
-            fn=_apply_shift_to_components,
+            fn=_apply_shift_to_timing_components,
             inputs=[base_row_count, runtime_base_shift, optimization, *base_row_components],
-            outputs=base_row_components,
+            outputs=_row_outputs(base_row_components, (4, 5, 6)),
             queue=False,
             show_progress=False,
         )
         runtime_hires_shift.change(
-            fn=_apply_shift_to_components,
+            fn=_apply_shift_to_timing_components,
             inputs=[hires_row_count, runtime_hires_shift, optimization, *hires_row_components],
-            outputs=hires_row_components,
+            outputs=_row_outputs(hires_row_components, (4, 5, 6)),
             queue=False,
             show_progress=False,
         )
@@ -1888,16 +1954,16 @@ class Script(scripts.Script):
             show_progress=False,
         )
         optimization.change(
-            fn=_apply_optimization_to_components,
+            fn=_apply_optimization_to_block_timing_components,
             inputs=[base_row_count, runtime_base_shift, optimization, *base_row_components],
-            outputs=base_row_components,
+            outputs=_row_outputs(base_row_components, (3, 4, 5, 6)),
             queue=False,
             show_progress=False,
         )
         optimization.change(
-            fn=_apply_optimization_to_components,
+            fn=_apply_optimization_to_block_timing_components,
             inputs=[hires_row_count, runtime_hires_shift, optimization, *hires_row_components],
-            outputs=hires_row_components,
+            outputs=_row_outputs(hires_row_components, (3, 4, 5, 6)),
             queue=False,
             show_progress=False,
         )
@@ -1907,16 +1973,25 @@ class Script(scripts.Script):
         ):
             for offset in range(0, len(row_components), 10):
                 row_components[offset + 8].change(
-                    fn=partial(_apply_stage_to_components, offset // 10),
+                    fn=partial(_apply_stage_to_row_components, offset // 10),
                     inputs=[row_count, runtime_shift, optimization, *row_components],
-                    outputs=row_components,
+                    outputs=[
+                        row_components[offset + 4],
+                        row_components[offset + 5],
+                        row_components[offset + 6],
+                        row_components[offset + 9],
+                    ],
                     queue=False,
                     show_progress=False,
                 )
                 row_components[offset + 9].change(
-                    fn=_apply_shift_to_components,
+                    fn=partial(_apply_auto_shift_to_row_components, offset // 10),
                     inputs=[row_count, runtime_shift, optimization, *row_components],
-                    outputs=row_components,
+                    outputs=[
+                        row_components[offset + 4],
+                        row_components[offset + 5],
+                        row_components[offset + 6],
+                    ],
                     queue=False,
                     show_progress=False,
                 )

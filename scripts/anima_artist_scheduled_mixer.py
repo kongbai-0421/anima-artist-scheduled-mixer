@@ -790,6 +790,16 @@ def _register_ui_settings():
 script_callbacks.on_ui_settings(_register_ui_settings)
 
 
+def _root_block_load(*args, **kwargs):
+    try:
+        from modules_forge.main_entry import Context
+
+        if getattr(Context, "root_block", None) is not None:
+            Context.root_block.load(*args, **kwargs)
+    except Exception:
+        logger.exception("Failed to register Anima artist mixer UI load callback")
+
+
 def _clamp(value, low, high):
     return max(low, min(high, value))
 
@@ -1195,7 +1205,7 @@ def _initial_ui_defaults(lang):
     }
 
 
-def _apply_template_ui(name, target, base_row_count, hires_row_count, current_base_shift, current_hires_shift, current_optimization, *component_values):
+def _apply_template_updates(name, target, base_row_count, hires_row_count, current_base_shift, current_hires_shift, current_optimization, component_values, remember=False, status_text=None):
     base_values = component_values[: MAX_ARTIST_ROWS * 10]
     hires_values = component_values[MAX_ARTIST_ROWS * 10 : MAX_ARTIST_ROWS * 20]
     base_current = _rows_from_components(*base_values)
@@ -1238,7 +1248,8 @@ def _apply_template_ui(name, target, base_row_count, hires_row_count, current_ba
         optimization_key if has_hires_rows or has_base_rows else fallback_optimization,
     )
     target = _option_key("apply_target", target, APPLY_BASE)
-    _remember_template(name, target)
+    if remember:
+        _remember_template(name, target)
     base_count_value = max(1, len(base_tpl)) if target in {APPLY_BASE, APPLY_BOTH} else max(1, int(_to_float(base_row_count, 1)))
     hires_count_value = max(1, len(hires_tpl)) if target in {APPLY_HIRES, APPLY_BOTH} else max(1, int(_to_float(hires_row_count, 1)))
     base_updates = [gr.update() for _ in range(MAX_ARTIST_ROWS * 10)]
@@ -1259,9 +1270,67 @@ def _apply_template_ui(name, target, base_row_count, hires_row_count, current_ba
         gr.update(value=_option_label("fusion", tpl.get("fusion_mode", FUSION_INTERPOLATE)), interactive=True),
         gr.update(value=tpl.get("apply_uncond", False), interactive=True),
         gr.update(value=tpl.get("enable_cache", True), interactive=True),
-        _t("applied_template").format(name=name, target=_option_label("apply_target", target)),
+        status_text if status_text is not None else _t("applied_template").format(name=name, target=_option_label("apply_target", target)),
         *base_updates,
         *hires_updates,
+    )
+
+
+def _apply_template_ui(name, target, base_row_count, hires_row_count, current_base_shift, current_hires_shift, current_optimization, *component_values):
+    return _apply_template_updates(
+        name,
+        target,
+        base_row_count,
+        hires_row_count,
+        current_base_shift,
+        current_hires_shift,
+        current_optimization,
+        component_values,
+        remember=True,
+    )
+
+
+def _blank_template_updates(status_text=""):
+    return (
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        status_text,
+        *[gr.update() for _ in range(MAX_ARTIST_ROWS * 20)],
+    )
+
+
+def _apply_last_template_on_load_ui(base_row_count, hires_row_count, current_base_shift, current_hires_shift, current_optimization, *component_values):
+    name = _last_template_name()
+    target = _last_template_target()
+    if not name:
+        return (
+            gr.update(),
+            gr.update(),
+            *_blank_template_updates(""),
+        )
+    return (
+        gr.update(value=name),
+        gr.update(value=_option_label("apply_target", target)),
+        *_apply_template_updates(
+            name,
+            target,
+            base_row_count,
+            hires_row_count,
+            current_base_shift,
+            current_hires_shift,
+            current_optimization,
+            component_values,
+            status_text="",
+        ),
     )
 
 
@@ -2038,6 +2107,30 @@ class Script(scripts.Script):
             fn=_apply_template_ui,
             inputs=[template_dropdown, template_apply_target, base_row_count, hires_row_count, runtime_base_shift, runtime_hires_shift, optimization, *base_row_components, *hires_row_components],
             outputs=[
+                base_row_count,
+                hires_row_count,
+                hires_independent,
+                runtime_base_shift,
+                runtime_hires_shift,
+                global_strength,
+                optimization,
+                combine_mode,
+                fusion_mode,
+                apply_uncond,
+                enable_cache,
+                template_status,
+                *base_row_components,
+                *hires_row_components,
+            ],
+            queue=False,
+            show_progress=False,
+        )
+        _root_block_load(
+            fn=_apply_last_template_on_load_ui,
+            inputs=[base_row_count, hires_row_count, runtime_base_shift, runtime_hires_shift, optimization, *base_row_components, *hires_row_components],
+            outputs=[
+                template_dropdown,
+                template_apply_target,
                 base_row_count,
                 hires_row_count,
                 hires_independent,

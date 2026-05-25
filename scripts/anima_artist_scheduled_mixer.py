@@ -24,6 +24,8 @@ LANGUAGE_CHOICES = ("zh", "en")
 
 FUSION_INTERPOLATE = "interpolate"
 FUSION_CONCAT_WITH_BASE = "concat_with_base"
+FUSION_QUALITY_DELTA = "quality_delta"
+BASE_CONTEXT_FUSIONS = {FUSION_CONCAT_WITH_BASE, FUSION_QUALITY_DELTA}
 COMBINE_OUTPUT_AVG = "output_avg"
 COMBINE_CONCAT = "concat"
 
@@ -97,6 +99,14 @@ OPTION_LABELS = {
             (
                 FUSION_CONCAT_WITH_BASE,
                 {"en": "Concat with base", "zh": "拼接底图条件", "aliases": ("concat base", "拼接原始条件")},
+            ),
+            (
+                FUSION_QUALITY_DELTA,
+                {
+                    "en": "Quality-safe delta",
+                    "zh": "保真增量",
+                    "aliases": ("delta", "safe delta", "quality delta", "保真差值", "质量安全增量"),
+                },
             ),
         ]
     ),
@@ -240,7 +250,7 @@ LANG = {
 
 INTRO_EN = f"""
 Independent artist encoding and scheduled cross-attention mixing for Anima.
-Each artist row is encoded separately as `artist + base prompt`, then mixed inside Anima cross-attention. The default `Output average + Interpolate` path is close to the approach used by [{REFERENCE_URL}]({REFERENCE_URL}).
+Each artist row is encoded separately as `artist + base prompt`, then mixed inside Anima cross-attention. The original `Output average + Interpolate` path is kept for strong mixing and follows the approach used by [{REFERENCE_URL}]({REFERENCE_URL}); the default uses a more conservative quality-safe delta mode for Forge so the base prompt remains anchored.
 
 The option labels follow the selected UI language, while templates keep stable internal values. Old templates that stored English, Chinese, or raw values should still load correctly after switching languages.
 
@@ -248,7 +258,7 @@ Thanks to **An1X3R/Anima-Artist-Mixer** and **汐浮尘/utowo** for the original
 """
 
 INTRO_ZH = f"""
-面向 Anima 的独立画师编码与按阶段 cross-attention 混合。每个画师会单独按 `画师 + 主提示词` 编码，再在 Anima 的 cross-attention 内混合。默认的“输出平均 + 插值融合”路线接近 [{REFERENCE_URL}]({REFERENCE_URL})。
+面向 Anima 的独立画师编码与按阶段 cross-attention 混合。每个画师会单独按 `画师 + 主提示词` 编码，再在 Anima 的 cross-attention 内混合。原版强混合路线“输出平均 + 插值融合”已保留，并参考 [{REFERENCE_URL}]({REFERENCE_URL})；Forge 版默认改用更保守的“保真增量”，让主提示词更稳地留在画面里。
 
 面板选项会跟随界面语言显示，模板内部使用稳定值保存。旧模板即使保存过英文、中文或原始值，切换语言后也会尽量自动识别并回显。
 
@@ -266,11 +276,11 @@ HELP_EN = """
 
 **Strength**
 
-Global artist strength blends the normal prompt cross-attention output with the mixed artist output. Row weights choose each artist's share; small row weights also reduce total influence when the active weights sum below 1. A row value like `Artist=(wlop:1.2), Weight=0.5` acts like a final artist row weight of `0.6`.
+Global artist strength controls how much of the artist branch is injected into the normal prompt cross-attention output. Row weights choose each artist's share; small row weights also reduce total influence when the active weights sum below 1. A row value like `Artist=(wlop:1.2), Weight=0.5` acts like a final artist row weight of `0.6`.
 
 **Modes**
 
-Optimization presets change default block ranges and the maximum number of active artists: Performance is cheaper, Balance is the default, Quality keeps wider defaults. Combine mode decides whether artist outputs are averaged after separate cross-attention calls or concatenated into one artist context. Fusion mode decides whether artists replace the base cross-attention context by interpolation, or are concatenated with the base context before attention.
+Optimization presets change default block ranges and the maximum number of active artists: Performance is cheaper, Balance is the default, Quality keeps wider defaults. Combine mode decides whether artist outputs are averaged after separate cross-attention calls or concatenated into one artist context. Fusion mode decides how the artist branch is applied: `Quality-safe delta` keeps the base output and adds a norm-limited artist difference, `Interpolate` matches the reference project's stronger output-space interpolation, and `Concat with base` lets attention see base and artist tokens together before blending.
 
 The UI localizes option labels. Templates are saved with stable internal values, so English/Chinese/raw values can be applied across language modes.
 """
@@ -286,11 +296,11 @@ HELP_ZH = """
 
 **强度**
 
-全局画师强度用于把原始提示词 cross-attention 输出与画师混合输出插值。单行权重决定画师占比；当活跃权重总和低于 1 时，也会降低整体介入。例如 `画师=(wlop:1.2)，权重=0.5`，最终该行画师权重相当于 `0.6`。
+全局画师强度用于控制画师分支往原始提示词 cross-attention 输出里注入多少。单行权重决定画师占比；当活跃权重总和低于 1 时，也会降低整体介入。例如 `画师=(wlop:1.2)，权重=0.5`，最终该行画师权重相当于 `0.6`。
 
 **模式**
 
-优化预设会改变默认层数和活跃画师上限：性能更省，平衡为默认，质量保留更宽默认范围。组合模式决定多个画师是分别 attention 后做输出平均，还是先拼成一个画师上下文。融合模式决定画师条件是通过插值替换原始 cross-attention 上下文，还是先和原始条件拼接后再 attention。
+优化预设会改变默认层数和活跃画师上限：性能更省，平衡为默认，质量保留更宽默认范围。组合模式决定多个画师是分别 attention 后做输出平均，还是先拼成一个画师上下文。融合模式决定画师分支怎样作用到主提示词：`保真增量` 会保留底图输出，只加入有范数限制的画师差值；`插值融合` 接近参考项目的强混合输出空间插值；`拼接底图条件` 会先让 attention 同时看到底图和画师 token，再做混合。
 
 面板会按语言汉化选项。模板保存稳定内部值，因此中文、英文或旧 raw 值模板都可以跨语言应用。
 """
@@ -743,11 +753,11 @@ def _default_rows(count=3, shift=3.0, optimization=OPT_BALANCE):
     for i in range(max(0, int(count))):
         stage = presets[i % len(presets)]
         start, end, peak = _auto_stage_values(stage, shift)
-        blocks = "4-23"
+        blocks = "6-21"
         if optimization == OPT_PERFORMANCE:
-            blocks = "8-20"
+            blocks = "10-18"
         elif optimization == OPT_QUALITY:
-            blocks = "0-27"
+            blocks = "4-23"
         rows.append([True, "", 1.0, blocks, start, end, peak, CURVE_SMOOTH, stage, True])
     return rows
 
@@ -862,14 +872,14 @@ def _save_template_record(name, row_key, rows, row_count, shift, global_strength
         return _template_dropdown_update(), _t("empty_template_name")
     optimization_key = _option_key("optimization", optimization, OPT_BALANCE)
     combine_key = _option_key("combine", combine_mode, COMBINE_OUTPUT_AVG)
-    fusion_key = _option_key("fusion", fusion_mode, FUSION_INTERPOLATE)
+    fusion_key = _option_key("fusion", fusion_mode, FUSION_QUALITY_DELTA)
     row_count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(row_count, len(_coerce_table(rows)) or 1))))
     shift = _to_float(shift, 3.0)
     data = _template_data()
     data[name] = {
         row_key: _normalize_rows(rows, row_count, shift, optimization_key, display=False),
         "hires_independent": row_key == "hires_rows",
-        "global_strength": _to_float(global_strength, 0.7),
+        "global_strength": _to_float(global_strength, 0.55),
         "optimization": optimization_key,
         "combine_mode": combine_key,
         "fusion_mode": fusion_key,
@@ -998,10 +1008,10 @@ def _apply_template_ui(name, target, base_row_count, hires_row_count, current_ba
         gr.update(value=tpl.get("hires_independent", False)),
         gr.update(),
         gr.update(),
-        gr.update(value=tpl.get("global_strength", 0.7)),
+        gr.update(value=tpl.get("global_strength", 0.55)),
         gr.update(value=_option_label("optimization", optimization_key)),
         gr.update(value=_option_label("combine", tpl.get("combine_mode", COMBINE_OUTPUT_AVG))),
-        gr.update(value=_option_label("fusion", tpl.get("fusion_mode", FUSION_INTERPOLATE))),
+        gr.update(value=_option_label("fusion", tpl.get("fusion_mode", FUSION_QUALITY_DELTA))),
         gr.update(value=tpl.get("apply_uncond", False)),
         gr.update(value=tpl.get("enable_cache", True)),
         _t("applied_template").format(name=name, target=_option_label("apply_target", target)),
@@ -1334,7 +1344,7 @@ def _artist_forward_batched(original_forward, x, context, rope_emb, transformer_
     contexts = []
     for artist, _ in artists:
         artist_context = _broadcast_batch(_to_context(artist.cond, context), batch_size)
-        if fusion_mode == FUSION_CONCAT_WITH_BASE:
+        if fusion_mode in BASE_CONTEXT_FUSIONS:
             contexts.append(torch.cat([context, artist_context], dim=1))
         else:
             contexts.append(artist_context)
@@ -1355,6 +1365,21 @@ def _artist_forward_batched(original_forward, x, context, rope_emb, transformer_
     out = out.view(count, batch_size, *out.shape[1:])
     w = torch.tensor(weights, device=out.device, dtype=out.dtype).view(count, *([1] * (out.dim() - 1)))
     return (out * w).sum(dim=0)
+
+
+def _norm_limited_delta(base_out, artist_out, strength, max_ratio=0.6):
+    delta = artist_out - base_out
+    if delta.numel() == 0:
+        return base_out
+    with torch.no_grad():
+        flat_delta = delta.detach().float().flatten(1)
+        flat_base = base_out.detach().float().flatten(1)
+        delta_norm = flat_delta.norm(dim=1).clamp_min(1e-6)
+        base_norm = flat_base.norm(dim=1).clamp_min(1e-6)
+        limit = base_norm * float(max_ratio)
+        scale = torch.minimum(torch.ones_like(delta_norm), limit / delta_norm)
+        shape = [scale.shape[0]] + [1] * (delta.dim() - 1)
+    return base_out + delta * scale.to(device=delta.device, dtype=delta.dtype).view(*shape) * float(strength)
 
 
 def _dispatch_cross_attn(original_forward, layer_idx, state, x, context=None, rope_emb=None, transformer_options={}):
@@ -1389,7 +1414,8 @@ def _dispatch_output_avg(original_forward, state, x, context, rope_emb, transfor
     total_abs = sum(abs(w) for w in raw_weights)
     if total_abs <= 1e-8:
         return original_forward(x, context=context, rope_emb=rope_emb, transformer_options=transformer_options)
-    denom = max(1.0, total_abs)
+    total_influence = _clamp(total_abs, 0.0, 1.0)
+    denom = total_abs
     weights = [w / denom for w in raw_weights]
     artist_total = None
     if state.batched and len(active) > 1 and not state.batched_disabled:
@@ -1411,15 +1437,18 @@ def _dispatch_output_avg(original_forward, state, x, context, rope_emb, transfor
     if artist_total is None:
         for (artist, _), weight in zip(active, weights):
             artist_context = _broadcast_batch(_to_context(artist.cond, context), batch_size)
-            kv = torch.cat([context, artist_context], dim=1) if state.fusion_mode == FUSION_CONCAT_WITH_BASE else artist_context
+            kv = torch.cat([context, artist_context], dim=1) if state.fusion_mode in BASE_CONTEXT_FUSIONS else artist_context
             out_i = original_forward(x, context=kv, rope_emb=rope_emb, transformer_options=transformer_options)
             artist_total = out_i * weight if artist_total is None else artist_total + out_i * weight
-    strength = _clamp(float(state.global_strength), 0.0, 2.0)
+    strength = _clamp(float(state.global_strength), 0.0, 1.0 if state.fusion_mode == FUSION_QUALITY_DELTA else 2.0) * total_influence
     base_out = original_forward(x, context=context, rope_emb=rope_emb, transformer_options=transformer_options)
     out = base_out.clone()
     for idx, hit in enumerate(mask):
         if hit:
-            out[idx] = base_out[idx] * (1.0 - strength) + artist_total[idx] * strength
+            if state.fusion_mode == FUSION_QUALITY_DELTA:
+                out[idx] = _norm_limited_delta(base_out[idx : idx + 1], artist_total[idx : idx + 1], strength)[0]
+            else:
+                out[idx] = base_out[idx] * (1.0 - strength) + artist_total[idx] * strength
     return out
 
 
@@ -1434,23 +1463,27 @@ def _dispatch_concat(original_forward, state, x, context, rope_emb, transformer_
     total_abs = sum(abs(w) for w in raw_weights)
     if total_abs <= 1e-8:
         return original_forward(x, context=context, rope_emb=rope_emb, transformer_options=transformer_options)
-    denom = max(1.0, total_abs)
+    total_influence = _clamp(total_abs, 0.0, 1.0)
+    denom = total_abs
     parts = []
     for artist, weight in active:
         artist_context = _broadcast_batch(_to_context(artist.cond, context), batch_size)
         parts.append(artist_context * (weight / denom))
     combined = torch.cat(parts, dim=1)
-    if state.fusion_mode == FUSION_CONCAT_WITH_BASE:
+    if state.fusion_mode in BASE_CONTEXT_FUSIONS:
         merged = torch.cat([context, combined], dim=1)
         artist_out = original_forward(x, context=merged, rope_emb=rope_emb, transformer_options=transformer_options)
     else:
         artist_out = original_forward(x, context=combined, rope_emb=rope_emb, transformer_options=transformer_options)
-    strength = _clamp(float(state.global_strength), 0.0, 2.0)
+    strength = _clamp(float(state.global_strength), 0.0, 1.0 if state.fusion_mode == FUSION_QUALITY_DELTA else 2.0) * total_influence
     base_out = original_forward(x, context=context, rope_emb=rope_emb, transformer_options=transformer_options)
     out = base_out.clone()
     for idx, hit in enumerate(mask):
         if hit:
-            out[idx] = base_out[idx] * (1.0 - strength) + artist_out[idx] * strength
+            if state.fusion_mode == FUSION_QUALITY_DELTA:
+                out[idx] = _norm_limited_delta(base_out[idx : idx + 1], artist_out[idx : idx + 1], strength)[0]
+            else:
+                out[idx] = base_out[idx] * (1.0 - strength) + artist_out[idx] * strength
     return out
 
 
@@ -1518,7 +1551,7 @@ class Script(scripts.Script):
         lang = _language()
         default_optimization = _option_label("optimization", OPT_BALANCE, lang)
         default_combine = _option_label("combine", COMBINE_OUTPUT_AVG, lang)
-        default_fusion = _option_label("fusion", FUSION_INTERPOLATE, lang)
+        default_fusion = _option_label("fusion", FUSION_QUALITY_DELTA, lang)
         default_rows = _normalize_rows(_default_rows(3, 3.0, OPT_BALANCE), 3, 3.0, OPT_BALANCE)
         intro_default_choice = _language_choice(lang)
         table_css = f"""
@@ -1550,7 +1583,7 @@ class Script(scripts.Script):
             enable = gr.Checkbox(label=_t("enable"), value=False, elem_id=self.elem_id("enable"))
             with gr.Row():
                 optimization = gr.Dropdown(label=_t("optimization"), choices=_option_choices("optimization", lang), value=default_optimization, elem_id=self.elem_id("optimization"))
-                global_strength = gr.Slider(label=_t("global_strength"), minimum=0.0, maximum=2.0, step=0.01, value=0.7, elem_id=self.elem_id("global_strength"))
+                global_strength = gr.Slider(label=_t("global_strength"), minimum=0.0, maximum=2.0, step=0.01, value=0.55, elem_id=self.elem_id("global_strength"))
                 enable_cache = gr.Checkbox(label=_t("cache"), value=True, elem_id=self.elem_id("enable_cache"))
             with gr.Row():
                 combine_mode = gr.Dropdown(label=_t("combine"), choices=_option_choices("combine", lang), value=default_combine, elem_id=self.elem_id("combine_mode"))
@@ -1789,7 +1822,7 @@ class Script(scripts.Script):
         rows = hires_rows if getattr(p, "is_hr_pass", False) and hires_independent else base_rows
         optimization = _option_key("optimization", optimization, OPT_BALANCE)
         combine_mode = _option_key("combine", combine_mode, COMBINE_OUTPUT_AVG)
-        fusion_mode = _option_key("fusion", fusion_mode, FUSION_INTERPOLATE)
+        fusion_mode = _option_key("fusion", fusion_mode, FUSION_QUALITY_DELTA)
         try:
             artists = _build_artists(p, rows, len(dm.blocks), shift, optimization, bool(enable_cache))
         except Exception as exc:
@@ -1802,10 +1835,11 @@ class Script(scripts.Script):
             artists = artists[:max_artists]
         if not artists:
             return
+        strength_limit = 1.0 if fusion_mode == FUSION_QUALITY_DELTA else 2.0
         state = MixerState(
             run_id=uuid.uuid4().hex,
             enabled=True,
-            global_strength=_clamp(_to_float(global_strength, 0.7), 0.0, 2.0),
+            global_strength=_clamp(_to_float(global_strength, 0.55), 0.0, strength_limit),
             combine_mode=combine_mode,
             fusion_mode=fusion_mode,
             apply_uncond=bool(apply_uncond),
@@ -1843,11 +1877,14 @@ class Script(scripts.Script):
                 )
             else:
                 logger.info(
-                    "Anima artist mixer run %s finished: dispatch=%d active=%d fallback=%d patched=%s wrapper_checks=%d",
+                    "Anima artist mixer run %s finished: dispatch=%d active=%d fallback=%d patched=%s wrapper_checks=%d strength=%.2f mode=%s/%s",
                     state.run_id,
                     state.dispatch_calls,
                     state.active_calls,
                     state.fallback_calls,
                     _summarize_blocks(state.patched_blocks),
                     state.wrapper_checks,
+                    state.global_strength,
+                    state.combine_mode,
+                    state.fusion_mode,
                 )

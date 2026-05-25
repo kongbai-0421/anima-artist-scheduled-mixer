@@ -1339,16 +1339,42 @@ def _to_context(tensor, context):
     return tensor.to(device=context.device, dtype=context.dtype, non_blocking=True)
 
 
+def _to_context_like(tensor, context):
+    artist = _broadcast_batch(_to_context(tensor, context), context.shape[0])
+    if artist.shape[-1] != context.shape[-1]:
+        raise RuntimeError(f"Artist context dim {artist.shape[-1]} does not match base context dim {context.shape[-1]}")
+    while artist.dim() < context.dim():
+        artist = artist.unsqueeze(1)
+    if artist.dim() != context.dim():
+        raise RuntimeError(f"Artist context rank {artist.dim()} does not match base context rank {context.dim()}")
+    expand_shape = list(artist.shape)
+    for dim in range(1, context.dim() - 2):
+        if artist.shape[dim] == context.shape[dim]:
+            continue
+        if artist.shape[dim] != 1:
+            raise RuntimeError(f"Cannot align artist context shape {tuple(artist.shape)} to base context shape {tuple(context.shape)}")
+        expand_shape[dim] = context.shape[dim]
+    return artist.expand(*expand_shape)
+
+
+def _context_token_dim(context):
+    return max(1, context.dim() - 2)
+
+
+def _concat_contexts(base_context, artist_context):
+    return torch.cat([base_context, artist_context], dim=_context_token_dim(base_context))
+
+
 def _artist_forward_batched(original_forward, x, context, rope_emb, transformer_options, artists, weights, fusion_mode):
     batch_size = context.shape[0]
     contexts = []
     for artist, _ in artists:
-        artist_context = _broadcast_batch(_to_context(artist.cond, context), batch_size)
+        artist_context = _to_context_like(artist.cond, context)
         if fusion_mode in BASE_CONTEXT_FUSIONS:
-            contexts.append(torch.cat([context, artist_context], dim=1))
+            contexts.append(_concat_contexts(context, artist_context))
         else:
             contexts.append(artist_context)
-    lengths = {item.shape[1] for item in contexts}
+    lengths = {item.shape[_context_token_dim(item)] for item in contexts}
     if len(lengths) > 1:
         raise RuntimeError(f"Cannot batch artist contexts with different token lengths: {lengths}")
     count = len(contexts)
@@ -1436,8 +1462,8 @@ def _dispatch_output_avg(original_forward, state, x, context, rope_emb, transfor
             artist_total = None
     if artist_total is None:
         for (artist, _), weight in zip(active, weights):
-            artist_context = _broadcast_batch(_to_context(artist.cond, context), batch_size)
-            kv = torch.cat([context, artist_context], dim=1) if state.fusion_mode in BASE_CONTEXT_FUSIONS else artist_context
+            artist_context = _to_context_like(artist.cond, context)
+            kv = _concat_contexts(context, artist_context) if state.fusion_mode in BASE_CONTEXT_FUSIONS else artist_context
             out_i = original_forward(x, context=kv, rope_emb=rope_emb, transformer_options=transformer_options)
             artist_total = out_i * weight if artist_total is None else artist_total + out_i * weight
     strength = _clamp(float(state.global_strength), 0.0, 1.0 if state.fusion_mode == FUSION_QUALITY_DELTA else 2.0) * total_influence
@@ -1467,11 +1493,11 @@ def _dispatch_concat(original_forward, state, x, context, rope_emb, transformer_
     denom = total_abs
     parts = []
     for artist, weight in active:
-        artist_context = _broadcast_batch(_to_context(artist.cond, context), batch_size)
+        artist_context = _to_context_like(artist.cond, context)
         parts.append(artist_context * (weight / denom))
-    combined = torch.cat(parts, dim=1)
+    combined = torch.cat(parts, dim=_context_token_dim(context))
     if state.fusion_mode in BASE_CONTEXT_FUSIONS:
-        merged = torch.cat([context, combined], dim=1)
+        merged = _concat_contexts(context, combined)
         artist_out = original_forward(x, context=merged, rope_emb=rope_emb, transformer_options=transformer_options)
     else:
         artist_out = original_forward(x, context=combined, rope_emb=rope_emb, transformer_options=transformer_options)

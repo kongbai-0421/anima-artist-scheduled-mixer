@@ -5,6 +5,7 @@ import re
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 
 import gradio as gr
@@ -20,12 +21,16 @@ TEMPLATE_FILE = EXTENSION_DIR / "artist_mixer_templates.json"
 REFERENCE_URL = "https://github.com/An1X3R/Anima-Artist-Mixer"
 
 LANGUAGE_OPTION = "anima_artist_scheduled_mixer_language"
+LAST_TEMPLATE_OPTION = "anima_artist_scheduled_mixer_last_template"
+LAST_TEMPLATE_TARGET_OPTION = "anima_artist_scheduled_mixer_last_template_target"
 LANGUAGE_CHOICES = ("zh", "en")
 
 FUSION_INTERPOLATE = "interpolate"
 FUSION_CONCAT_WITH_BASE = "concat_with_base"
 FUSION_QUALITY_DELTA = "quality_delta"
-BASE_CONTEXT_FUSIONS = {FUSION_CONCAT_WITH_BASE, FUSION_QUALITY_DELTA}
+# quality_delta is already anchored by comparing artist_out against base_out.
+# Concatenating the base context again dilutes the artist token influence.
+BASE_CONTEXT_FUSIONS = {FUSION_CONCAT_WITH_BASE}
 COMBINE_OUTPUT_AVG = "output_avg"
 COMBINE_CONCAT = "concat"
 
@@ -52,6 +57,7 @@ APPLY_HIRES = "Hires"
 APPLY_BOTH = "Both"
 
 MAX_ARTIST_ROWS = 32
+DEFAULT_ARTIST_ROWS = 4
 
 TABLE_HEADERS = [
     "Enabled",
@@ -90,7 +96,7 @@ OPTION_LABELS = {
     "combine": OrderedDict(
         [
             (COMBINE_OUTPUT_AVG, {"en": "Output average", "zh": "输出平均", "aliases": ("output average", "输出平均值")}),
-            (COMBINE_CONCAT, {"en": "Token concat", "zh": "令牌拼接", "aliases": ("concat", "拼接")}),
+            (COMBINE_CONCAT, {"en": "Token concatenation", "zh": "token拼接", "aliases": ("Token concat", "concat", "拼接", "令牌拼接")}),
         ]
     ),
     "fusion": OrderedDict(
@@ -250,7 +256,7 @@ LANG = {
 
 INTRO_EN = f"""
 Independent artist encoding and scheduled cross-attention mixing for Anima.
-Each artist row is encoded separately as `artist + base prompt`, then mixed inside Anima cross-attention. The original `Output average + Interpolate` path is kept for strong mixing and follows the approach used by [{REFERENCE_URL}]({REFERENCE_URL}); the default uses a more conservative quality-safe delta mode for Forge so the base prompt remains anchored.
+Each artist row is encoded separately as `artist + base prompt`, then mixed inside Anima cross-attention. The default `Output average + Interpolate` path follows the stronger reference behavior from [{REFERENCE_URL}]({REFERENCE_URL}); `Quality-safe delta` is still available when you want a more conservative Forge-friendly blend.
 
 The option labels follow the selected UI language, while templates keep stable internal values. Old templates that stored English, Chinese, or raw values should still load correctly after switching languages.
 
@@ -258,7 +264,7 @@ Thanks to **An1X3R/Anima-Artist-Mixer** and **汐浮尘/utowo** for the original
 """
 
 INTRO_ZH = f"""
-面向 Anima 的独立画师编码与按阶段 cross-attention 混合。每个画师会单独按 `画师 + 主提示词` 编码，再在 Anima 的 cross-attention 内混合。原版强混合路线“输出平均 + 插值融合”已保留，并参考 [{REFERENCE_URL}]({REFERENCE_URL})；Forge 版默认改用更保守的“保真增量”，让主提示词更稳地留在画面里。
+面向 Anima 的独立画师编码与按阶段 cross-attention 混合。每个画师会单独按 `画师 + 主提示词` 编码，再在 Anima 的 cross-attention 内混合。默认的“输出平均 + 插值融合”沿用 [{REFERENCE_URL}]({REFERENCE_URL}) 的强混合路线；需要更保守的 Forge 友好混合时，也可以手动切到“保真增量”。
 
 面板选项会跟随界面语言显示，模板内部使用稳定值保存。旧模板即使保存过英文、中文或原始值，切换语言后也会尽量自动识别并回显。
 
@@ -270,17 +276,27 @@ HELP_EN = """
 
 `Artist`: one artist prompt per row. It may include an inline row multiplier such as `(wlop:1.2)`, `[wlop:0.8]`, or `wlop:1.2`; the final row strength is `Weight x inline multiplier`. Keep comma-separated chains for quick migration if needed, but one artist per row gives the cleanest control.
 
-`Weight` controls this artist's relative and absolute contribution. `Blocks` accepts `0-27`, `0,3,5-12`, or negative indices such as `-1`. `Start/End/Peak` are denoise progress values from 0 to 1. `Curve` shapes the row strength inside the window.
+`Weight` controls this artist's relative and absolute contribution. `Blocks` accepts `0-27`, `0,3,5-12`, or negative indices such as `-1`. `Start` and `End` are denoise progress values from 0 to 1. `Peak` is the point inside that window where the row reaches full strength; it matters most for Smooth and Triangle curves.
 
-`Stage + Auto Shift` can rewrite timing like the Anima LoRA Stage Scheduler. It reads the current Shift from the Forge generation panel: Composition is early, Character is middle, Style is late; larger Shift values move windows slightly later. Turn off Auto Shift to edit Start/End/Peak manually.
+`Curve` shapes the row strength inside the Start/End window. Hold stays at full strength for the whole window. Smooth fades in and out around the peak. Triangle rises and falls linearly. Front loaded starts strong and fades later; Back loaded does the opposite.
+
+`Stage` is a timing preset. Custom keeps your manual values. Composition starts early, Character focuses on the middle, and Style runs late. Choosing a non-Custom stage refreshes Start/End/Peak immediately and enables Auto Shift for that row. Auto Shift keeps the row aligned with the current Forge Shift value; turn it off afterward if you want to fine-tune the numbers by hand.
 
 **Strength**
 
 Global artist strength controls how much of the artist branch is injected into the normal prompt cross-attention output. Row weights choose each artist's share; small row weights also reduce total influence when the active weights sum below 1. A row value like `Artist=(wlop:1.2), Weight=0.5` acts like a final artist row weight of `0.6`.
 
-**Modes**
+**Optimization Preset**
 
-Optimization presets change default block ranges and the maximum number of active artists: Performance is cheaper, Balance is the default, Quality keeps wider defaults. Combine mode decides whether artist outputs are averaged after separate cross-attention calls or concatenated into one artist context. Fusion mode decides how the artist branch is applied: `Quality-safe delta` keeps the base output and adds a norm-limited artist difference, `Interpolate` matches the reference project's stronger output-space interpolation, and `Concat with base` lets attention see base and artist tokens together before blending.
+Performance limits the default block range and caps the active artist count lower, so it is cheaper. Balance keeps the reference-friendly default while allowing more artists. Quality keeps the broad block range and raises the artist cap for heavier mixes.
+
+**Combine Mode**
+
+Output average runs each artist branch separately, then averages the artist outputs by weight. This is the most predictable mode and matches the recommended reference path. Token concatenation joins the artist contexts first and sends them through attention together; it is useful for compact mixes, but the artists can interact more strongly.
+
+**Fusion Mode**
+
+Interpolate blends between the base prompt output and the artist branch output. It is the strongest and most reference-compatible default. Concat with base lets attention see base tokens and artist tokens together before blending. Quality-safe delta keeps the base output and adds a norm-limited artist difference, which is steadier but can look much weaker.
 
 The UI localizes option labels. Templates are saved with stable internal values, so English/Chinese/raw values can be applied across language modes.
 """
@@ -290,17 +306,27 @@ HELP_ZH = """
 
 `画师` 每行建议填一个画师提示词。可以直接写行内倍率，例如 `(wlop:1.2)`、`[wlop:0.8]` 或 `wlop:1.2`；最终强度是 `权重 x 行内倍率`。为了迁移旧画师串，逗号分隔仍可用，但每行一个画师最方便单独控制。
 
-`权重` 控制该画师的相对比例，也会在总权重低于 1 时降低实际介入。`层数` 支持 `0-27`、`0,3,5-12`，也支持 `-1` 这种倒数索引。`开始/结束/峰值` 是 0 到 1 的去噪进度，`曲线` 控制窗口内强度变化。
+`权重` 控制该画师的相对比例，也会在总权重低于 1 时降低实际介入。`层数` 支持 `0-27`、`0,3,5-12`，也支持 `-1` 这种倒数索引。`开始` 和 `结束` 是 0 到 1 的去噪进度。`峰值` 表示这一行在窗口内达到满强度的位置，对平滑和三角峰曲线最明显。
 
-`阶段 + 自动偏移` 会像 Anima LoRA 阶段插件一样重写时间，并且直接读取 Forge 生成参数区当前 Shift：构图靠前，人物居中，画风靠后；偏移值越大窗口会略向后移动。关闭自动偏移后可以手动编辑开始、结束和峰值。
+`曲线` 决定窗口内强度怎样变化。保持会在整个窗口内满强度。平滑会围绕峰值淡入淡出。三角峰会线性升到峰值再线性降下。前段强化是一开始更强、后面变弱；后段强化则相反。
+
+`阶段` 是时间预设。自定义会保留你手动填写的值。构图偏前段，人物偏中段，画风偏后段。选择自定义之外的阶段时，界面会立即刷新开始、结束和峰值，并为这一行打开自动偏移。自动偏移会跟随 Forge 生成参数区的 Shift；如果之后想微调数字，再把自动偏移关掉即可。
 
 **强度**
 
 全局画师强度用于控制画师分支往原始提示词 cross-attention 输出里注入多少。单行权重决定画师占比；当活跃权重总和低于 1 时，也会降低整体介入。例如 `画师=(wlop:1.2)，权重=0.5`，最终该行画师权重相当于 `0.6`。
 
-**模式**
+**优化预设**
 
-优化预设会改变默认层数和活跃画师上限：性能更省，平衡为默认，质量保留更宽默认范围。组合模式决定多个画师是分别 attention 后做输出平均，还是先拼成一个画师上下文。融合模式决定画师分支怎样作用到主提示词：`保真增量` 会保留底图输出，只加入有范数限制的画师差值；`插值融合` 接近参考项目的强混合输出空间插值；`拼接底图条件` 会先让 attention 同时看到底图和画师 token，再做混合。
+性能会收窄默认层数范围，并降低可同时参与的画师上限，生成更省。平衡保留更接近参考插件的默认范围，同时允许较多画师。质量保留宽层数范围，并提高画师上限，适合更重的混合。
+
+**组合模式**
+
+输出平均会让每个画师分支分别跑 attention，再按权重平均输出，是最稳定、也最接近参考推荐的方式。token拼接会先把多个画师上下文拼在一起再送入 attention，适合更紧凑的混合，但画师之间会更容易互相影响。
+
+**融合模式**
+
+插值融合会在主提示词输出和画师分支输出之间做插值，是最强、也最接近参考插件默认效果的方式。拼接底图条件会先让 attention 同时看到底图 token 和画师 token，再进行混合。保真增量会保留底图输出，只加入有范数限制的画师差值，更稳但也可能明显偏弱。
 
 面板会按语言汉化选项。模板保存稳定内部值，因此中文、英文或旧 raw 值模板都可以跨语言应用。
 """
@@ -345,6 +371,35 @@ def _save_ui_language(language):
     except Exception:
         logger.exception("Failed to save Anima artist mixer UI language")
         return _intro_text(language_code), LANG[language_code]["language_save_failed"]
+
+
+def _set_persistent_option(name, value):
+    if name in shared.opts.data_labels:
+        shared.opts.set(name, value, run_callbacks=False)
+    else:
+        shared.opts.data[name] = value
+
+
+def _last_template_name():
+    name = str(getattr(shared.opts, LAST_TEMPLATE_OPTION, "") or "").strip()
+    return name if name in _template_data() else None
+
+
+def _last_template_target():
+    return _option_key("apply_target", getattr(shared.opts, LAST_TEMPLATE_TARGET_OPTION, APPLY_BASE), APPLY_BASE)
+
+
+def _remember_template(name, target):
+    name = str(name or "").strip()
+    if not name:
+        return
+    target_key = _option_key("apply_target", target, APPLY_BASE)
+    try:
+        _set_persistent_option(LAST_TEMPLATE_OPTION, name)
+        _set_persistent_option(LAST_TEMPLATE_TARGET_OPTION, target_key)
+        shared.opts.save(shared.config_filename)
+    except Exception:
+        logger.exception("Failed to remember last Anima artist mixer template")
 
 
 def _bool_label(value, language=None):
@@ -462,16 +517,16 @@ def _component_values_from_rows(rows, shift=3.0, optimization=OPT_BALANCE, count
         visible = index < count
         updates.extend(
             [
-                gr.update(value=row[0], visible=visible),
-                gr.update(value=row[1], visible=visible),
-                gr.update(value=row[2], visible=visible),
-                gr.update(value=row[3], visible=visible),
-                gr.update(value=row[4], visible=visible),
-                gr.update(value=row[5], visible=visible),
-                gr.update(value=row[6], visible=visible),
-                gr.update(value=row[7], visible=visible),
-                gr.update(value=row[8], visible=visible),
-                gr.update(value=row[9], visible=visible),
+                gr.update(value=row[0], visible=visible, interactive=True),
+                gr.update(value=row[1], visible=visible, interactive=True),
+                gr.update(value=row[2], visible=visible, interactive=True),
+                gr.update(value=row[3], visible=visible, interactive=True),
+                gr.update(value=row[4], visible=visible, interactive=True),
+                gr.update(value=row[5], visible=visible, interactive=True),
+                gr.update(value=row[6], visible=visible, interactive=True),
+                gr.update(value=row[7], visible=visible, interactive=True),
+                gr.update(value=row[8], visible=visible, interactive=True),
+                gr.update(value=row[9], visible=visible, interactive=True),
             ]
         )
     return updates
@@ -486,6 +541,44 @@ def _resize_row_components(count, shift, optimization, *values):
 def _apply_shift_to_components(count, shift, optimization, *values):
     rows = _rows_from_components(*values)
     count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(count, len(rows) or 1))))
+    return _component_values_from_rows(rows, shift, optimization, count)
+
+
+def _default_blocks_for_optimization(optimization):
+    optimization = _option_key("optimization", optimization, OPT_BALANCE)
+    if optimization == OPT_PERFORMANCE:
+        return "10-18"
+    return "0-27"
+
+
+def _apply_optimization_to_components(count, shift, optimization, *values):
+    rows = _rows_from_components(*values)
+    count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(count, len(rows) or 1))))
+    blocks = _default_blocks_for_optimization(optimization)
+    for index in range(min(count, len(rows))):
+        row = list(rows[index])
+        row += [None] * (len(TABLE_HEADERS) - len(row))
+        row[3] = blocks
+        if _to_bool(row[9], True) and _option_key("stage", row[8], PRESET_CUSTOM) != PRESET_CUSTOM:
+            row[4], row[5], row[6] = _auto_stage_values(row[8], shift)
+        rows[index] = row
+    return _component_values_from_rows(rows, shift, optimization, count)
+
+
+def _apply_stage_to_components(row_index, count, shift, optimization, *values):
+    rows = _rows_from_components(*values)
+    count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(count, len(rows) or 1))))
+    if 0 <= row_index < len(rows):
+        row = list(rows[row_index])
+        row += [None] * (len(TABLE_HEADERS) - len(row))
+        stage = _option_key("stage", row[8], PRESET_CUSTOM)
+        if stage == PRESET_CUSTOM:
+            row[9] = False
+        else:
+            start, end, peak = _auto_stage_values(stage, shift)
+            row[4], row[5], row[6] = start, end, peak
+            row[9] = True
+        rows[row_index] = row
     return _component_values_from_rows(rows, shift, optimization, count)
 
 
@@ -590,19 +683,42 @@ def _create_artist_row_controls(prefix, lang, defaults, elem_id_func):
 
 
 def _register_ui_settings():
-    if LANGUAGE_OPTION in shared.opts.data_labels:
-        return
-    shared.opts.add_option(
-        LANGUAGE_OPTION,
-        shared.OptionInfo(
-            "zh",
-            "Anima Artist Scheduled Mixer language / Anima 画师串调度混合语言",
-            gr.Radio,
-            {"choices": LANGUAGE_CHOICES},
-            section=("anima-artist-scheduled-mixer", "Anima Artist Scheduled Mixer"),
-            category_id="system",
-        ).needs_reload_ui(),
-    )
+    if LANGUAGE_OPTION not in shared.opts.data_labels:
+        shared.opts.add_option(
+            LANGUAGE_OPTION,
+            shared.OptionInfo(
+                "zh",
+                "Anima Artist Scheduled Mixer language / Anima 画师串调度混合语言",
+                gr.Radio,
+                {"choices": LANGUAGE_CHOICES},
+                section=("anima-artist-scheduled-mixer", "Anima Artist Scheduled Mixer"),
+                category_id="system",
+            ).needs_reload_ui(),
+        )
+    if LAST_TEMPLATE_OPTION not in shared.opts.data_labels:
+        shared.opts.add_option(
+            LAST_TEMPLATE_OPTION,
+            shared.OptionInfo(
+                "",
+                "Last applied Anima Artist Scheduled Mixer template / 上次应用的 Anima 画师串模板",
+                gr.Textbox,
+                {"visible": False},
+                section=("anima-artist-scheduled-mixer", "Anima Artist Scheduled Mixer"),
+                category_id="system",
+            ),
+        )
+    if LAST_TEMPLATE_TARGET_OPTION not in shared.opts.data_labels:
+        shared.opts.add_option(
+            LAST_TEMPLATE_TARGET_OPTION,
+            shared.OptionInfo(
+                APPLY_BASE,
+                "Last Anima Artist Scheduled Mixer template target / 上次模板应用目标",
+                gr.Textbox,
+                {"visible": False},
+                section=("anima-artist-scheduled-mixer", "Anima Artist Scheduled Mixer"),
+                category_id="system",
+            ),
+        )
 
 
 script_callbacks.on_ui_settings(_register_ui_settings)
@@ -746,19 +862,12 @@ def _curve_factor(progress, start, end, peak, curve):
     return raw * raw * (3.0 - 2.0 * raw)
 
 
-def _default_rows(count=3, shift=3.0, optimization=OPT_BALANCE):
+def _default_rows(count=DEFAULT_ARTIST_ROWS, shift=3.0, optimization=OPT_BALANCE):
     optimization = _option_key("optimization", optimization, OPT_BALANCE)
-    presets = [PRESET_CHARACTER, PRESET_STYLE, PRESET_COMPOSITION]
     rows = []
     for i in range(max(0, int(count))):
-        stage = presets[i % len(presets)]
-        start, end, peak = _auto_stage_values(stage, shift)
-        blocks = "6-21"
-        if optimization == OPT_PERFORMANCE:
-            blocks = "10-18"
-        elif optimization == OPT_QUALITY:
-            blocks = "4-23"
-        rows.append([True, "", 1.0, blocks, start, end, peak, CURVE_SMOOTH, stage, True])
+        blocks = _default_blocks_for_optimization(optimization)
+        rows.append([True, "", 1.0, blocks, 0.0, 1.0, 0.5, CURVE_HOLD, PRESET_CUSTOM, False])
     return rows
 
 
@@ -872,14 +981,14 @@ def _save_template_record(name, row_key, rows, row_count, shift, global_strength
         return _template_dropdown_update(), _t("empty_template_name")
     optimization_key = _option_key("optimization", optimization, OPT_BALANCE)
     combine_key = _option_key("combine", combine_mode, COMBINE_OUTPUT_AVG)
-    fusion_key = _option_key("fusion", fusion_mode, FUSION_QUALITY_DELTA)
+    fusion_key = _option_key("fusion", fusion_mode, FUSION_INTERPOLATE)
     row_count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(row_count, len(_coerce_table(rows)) or 1))))
     shift = _to_float(shift, 3.0)
     data = _template_data()
     data[name] = {
         row_key: _normalize_rows(rows, row_count, shift, optimization_key, display=False),
         "hires_independent": row_key == "hires_rows",
-        "global_strength": _to_float(global_strength, 0.55),
+        "global_strength": _to_float(global_strength, 0.7),
         "optimization": optimization_key,
         "combine_mode": combine_key,
         "fusion_mode": fusion_key,
@@ -951,6 +1060,75 @@ def _delete_template_ui(name):
     return _template_dropdown_update(), _t("no_template_deleted")
 
 
+def _initial_ui_defaults(lang):
+    base_shift = 3.0
+    hires_shift = 3.0
+    base_count = DEFAULT_ARTIST_ROWS
+    hires_count = DEFAULT_ARTIST_ROWS
+    optimization_key = OPT_BALANCE
+    combine_key = COMBINE_OUTPUT_AVG
+    fusion_key = FUSION_INTERPOLATE
+    apply_target_key = APPLY_BASE
+    global_strength = 0.7
+    hires_independent = False
+    apply_uncond = False
+    enable_cache = True
+    template_name = _last_template_name()
+
+    base_rows = _normalize_rows(_default_rows(base_count, base_shift, optimization_key), base_count, base_shift, optimization_key)
+    hires_rows = _normalize_rows(_default_rows(hires_count, hires_shift, optimization_key), hires_count, hires_shift, optimization_key)
+
+    tpl = _template_data().get(template_name) if template_name else None
+    if isinstance(tpl, dict):
+        optimization_key = _option_key("optimization", tpl.get("optimization"), OPT_BALANCE)
+        combine_key = _option_key("combine", tpl.get("combine_mode"), COMBINE_OUTPUT_AVG)
+        fusion_key = _option_key("fusion", tpl.get("fusion_mode"), FUSION_INTERPOLATE)
+        apply_target_key = _last_template_target()
+        global_strength = _to_float(tpl.get("global_strength"), global_strength)
+        hires_independent = bool(tpl.get("hires_independent", False))
+        apply_uncond = bool(tpl.get("apply_uncond", False))
+        enable_cache = bool(tpl.get("enable_cache", True))
+
+        has_base_rows = bool(tpl.get("base_rows"))
+        has_hires_rows = bool(tpl.get("hires_rows"))
+        fallback_optimization = optimization_key if has_base_rows or has_hires_rows else OPT_BALANCE
+        base_tpl = _normalize_rows(
+            tpl.get("base_rows") or tpl.get("hires_rows") or base_rows,
+            None,
+            base_shift,
+            fallback_optimization,
+        )
+        hires_tpl = _normalize_rows(
+            tpl.get("hires_rows") or tpl.get("base_rows") or hires_rows,
+            None,
+            hires_shift,
+            fallback_optimization,
+        )
+
+        if apply_target_key in {APPLY_BASE, APPLY_BOTH}:
+            base_rows = base_tpl
+            base_count = max(1, len(base_tpl))
+        if apply_target_key in {APPLY_HIRES, APPLY_BOTH}:
+            hires_rows = hires_tpl
+            hires_count = max(1, len(hires_tpl))
+
+    return {
+        "template_name": template_name,
+        "template_target": _option_label("apply_target", apply_target_key, lang),
+        "base_count": base_count,
+        "hires_count": hires_count,
+        "base_rows": base_rows,
+        "hires_rows": hires_rows,
+        "hires_independent": hires_independent,
+        "global_strength": global_strength,
+        "optimization": _option_label("optimization", optimization_key, lang),
+        "combine": _option_label("combine", combine_key, lang),
+        "fusion": _option_label("fusion", fusion_key, lang),
+        "apply_uncond": apply_uncond,
+        "enable_cache": enable_cache,
+    }
+
+
 def _apply_template_ui(name, target, base_row_count, hires_row_count, current_base_shift, current_hires_shift, current_optimization, *component_values):
     base_values = component_values[: MAX_ARTIST_ROWS * 10]
     hires_values = component_values[MAX_ARTIST_ROWS * 10 : MAX_ARTIST_ROWS * 20]
@@ -994,6 +1172,7 @@ def _apply_template_ui(name, target, base_row_count, hires_row_count, current_ba
         optimization_key if has_hires_rows or has_base_rows else fallback_optimization,
     )
     target = _option_key("apply_target", target, APPLY_BASE)
+    _remember_template(name, target)
     base_count_value = max(1, len(base_tpl)) if target in {APPLY_BASE, APPLY_BOTH} else max(1, int(_to_float(base_row_count, 1)))
     hires_count_value = max(1, len(hires_tpl)) if target in {APPLY_HIRES, APPLY_BOTH} else max(1, int(_to_float(hires_row_count, 1)))
     base_updates = [gr.update() for _ in range(MAX_ARTIST_ROWS * 10)]
@@ -1003,17 +1182,17 @@ def _apply_template_ui(name, target, base_row_count, hires_row_count, current_ba
     if target in {APPLY_HIRES, APPLY_BOTH}:
         hires_updates = _component_values_from_rows(hires_tpl, hires_shift, optimization_key, hires_count_value)
     return (
-        gr.update(value=base_count_value),
-        gr.update(value=hires_count_value),
-        gr.update(value=tpl.get("hires_independent", False)),
+        gr.update(value=base_count_value, interactive=True),
+        gr.update(value=hires_count_value, interactive=True),
+        gr.update(value=tpl.get("hires_independent", False), interactive=True),
         gr.update(),
         gr.update(),
-        gr.update(value=tpl.get("global_strength", 0.55)),
-        gr.update(value=_option_label("optimization", optimization_key)),
-        gr.update(value=_option_label("combine", tpl.get("combine_mode", COMBINE_OUTPUT_AVG))),
-        gr.update(value=_option_label("fusion", tpl.get("fusion_mode", FUSION_QUALITY_DELTA))),
-        gr.update(value=tpl.get("apply_uncond", False)),
-        gr.update(value=tpl.get("enable_cache", True)),
+        gr.update(value=tpl.get("global_strength", 0.7), interactive=True),
+        gr.update(value=_option_label("optimization", optimization_key), interactive=True),
+        gr.update(value=_option_label("combine", tpl.get("combine_mode", COMBINE_OUTPUT_AVG)), interactive=True),
+        gr.update(value=_option_label("fusion", tpl.get("fusion_mode", FUSION_INTERPOLATE)), interactive=True),
+        gr.update(value=tpl.get("apply_uncond", False), interactive=True),
+        gr.update(value=tpl.get("enable_cache", True), interactive=True),
         _t("applied_template").format(name=name, target=_option_label("apply_target", target)),
         *base_updates,
         *hires_updates,
@@ -1115,6 +1294,8 @@ class MixerState:
     active_calls: int = 0
     fallback_calls: int = 0
     wrapper_checks: int = 0
+    diff_probe: tuple[float, float] | None = None
+    mask_probe: tuple[int, int] | None = None
     superseded: bool = False
 
     def target_blocks(self):
@@ -1431,8 +1612,11 @@ def _dispatch_cross_attn(original_forward, layer_idx, state, x, context=None, ro
 
 def _dispatch_output_avg(original_forward, state, x, context, rope_emb, transformer_options, active):
     batch_size = context.shape[0]
+    cou = transformer_options.get("cond_or_uncond") if isinstance(transformer_options, dict) else None
+    if state.mask_probe is None:
+        state.mask_probe = (len(cou) if cou is not None else -1, int(batch_size))
     mask = _resolve_row_mask(
-        transformer_options.get("cond_or_uncond") if isinstance(transformer_options, dict) else None,
+        cou,
         batch_size,
         state.apply_uncond,
     )
@@ -1468,6 +1652,11 @@ def _dispatch_output_avg(original_forward, state, x, context, rope_emb, transfor
             artist_total = out_i * weight if artist_total is None else artist_total + out_i * weight
     strength = _clamp(float(state.global_strength), 0.0, 1.0 if state.fusion_mode == FUSION_QUALITY_DELTA else 2.0) * total_influence
     base_out = original_forward(x, context=context, rope_emb=rope_emb, transformer_options=transformer_options)
+    if state.diff_probe is None:
+        with torch.no_grad():
+            delta_norm = (artist_total - base_out).detach().float().flatten(1).norm(dim=1).mean().item()
+            base_norm = base_out.detach().float().flatten(1).norm(dim=1).mean().clamp_min(1e-6).item()
+            state.diff_probe = (float(delta_norm), float(delta_norm / base_norm))
     out = base_out.clone()
     for idx, hit in enumerate(mask):
         if hit:
@@ -1480,8 +1669,11 @@ def _dispatch_output_avg(original_forward, state, x, context, rope_emb, transfor
 
 def _dispatch_concat(original_forward, state, x, context, rope_emb, transformer_options, active):
     batch_size = context.shape[0]
+    cou = transformer_options.get("cond_or_uncond") if isinstance(transformer_options, dict) else None
+    if state.mask_probe is None:
+        state.mask_probe = (len(cou) if cou is not None else -1, int(batch_size))
     mask = _resolve_row_mask(
-        transformer_options.get("cond_or_uncond") if isinstance(transformer_options, dict) else None,
+        cou,
         batch_size,
         state.apply_uncond,
     )
@@ -1503,6 +1695,11 @@ def _dispatch_concat(original_forward, state, x, context, rope_emb, transformer_
         artist_out = original_forward(x, context=combined, rope_emb=rope_emb, transformer_options=transformer_options)
     strength = _clamp(float(state.global_strength), 0.0, 1.0 if state.fusion_mode == FUSION_QUALITY_DELTA else 2.0) * total_influence
     base_out = original_forward(x, context=context, rope_emb=rope_emb, transformer_options=transformer_options)
+    if state.diff_probe is None:
+        with torch.no_grad():
+            delta_norm = (artist_out - base_out).detach().float().flatten(1).norm(dim=1).mean().item()
+            base_norm = base_out.detach().float().flatten(1).norm(dim=1).mean().clamp_min(1e-6).item()
+            state.diff_probe = (float(delta_norm), float(delta_norm / base_norm))
     out = base_out.clone()
     for idx, hit in enumerate(mask):
         if hit:
@@ -1575,10 +1772,7 @@ class Script(scripts.Script):
 
     def ui(self, is_img2img):
         lang = _language()
-        default_optimization = _option_label("optimization", OPT_BALANCE, lang)
-        default_combine = _option_label("combine", COMBINE_OUTPUT_AVG, lang)
-        default_fusion = _option_label("fusion", FUSION_QUALITY_DELTA, lang)
-        default_rows = _normalize_rows(_default_rows(3, 3.0, OPT_BALANCE), 3, 3.0, OPT_BALANCE)
+        defaults = _initial_ui_defaults(lang)
         intro_default_choice = _language_choice(lang)
         table_css = f"""
         <style>
@@ -1608,35 +1802,35 @@ class Script(scripts.Script):
             runtime_hires_shift = gr.Number(value=3.0, visible=False, elem_id=self.elem_id("runtime_hires_shift"))
             enable = gr.Checkbox(label=_t("enable"), value=False, elem_id=self.elem_id("enable"))
             with gr.Row():
-                optimization = gr.Dropdown(label=_t("optimization"), choices=_option_choices("optimization", lang), value=default_optimization, elem_id=self.elem_id("optimization"))
-                global_strength = gr.Slider(label=_t("global_strength"), minimum=0.0, maximum=2.0, step=0.01, value=0.55, elem_id=self.elem_id("global_strength"))
-                enable_cache = gr.Checkbox(label=_t("cache"), value=True, elem_id=self.elem_id("enable_cache"))
+                optimization = gr.Dropdown(label=_t("optimization"), choices=_option_choices("optimization", lang), value=defaults["optimization"], elem_id=self.elem_id("optimization"))
+                global_strength = gr.Slider(label=_t("global_strength"), minimum=0.0, maximum=2.0, step=0.01, value=defaults["global_strength"], elem_id=self.elem_id("global_strength"))
+                enable_cache = gr.Checkbox(label=_t("cache"), value=defaults["enable_cache"], elem_id=self.elem_id("enable_cache"))
             with gr.Row():
-                combine_mode = gr.Dropdown(label=_t("combine"), choices=_option_choices("combine", lang), value=default_combine, elem_id=self.elem_id("combine_mode"))
-                fusion_mode = gr.Dropdown(label=_t("fusion"), choices=_option_choices("fusion", lang), value=default_fusion, elem_id=self.elem_id("fusion_mode"))
-                apply_uncond = gr.Checkbox(label=_t("apply_uncond"), value=False, elem_id=self.elem_id("apply_uncond"))
+                combine_mode = gr.Dropdown(label=_t("combine"), choices=_option_choices("combine", lang), value=defaults["combine"], elem_id=self.elem_id("combine_mode"))
+                fusion_mode = gr.Dropdown(label=_t("fusion"), choices=_option_choices("fusion", lang), value=defaults["fusion"], elem_id=self.elem_id("fusion_mode"))
+                apply_uncond = gr.Checkbox(label=_t("apply_uncond"), value=defaults["apply_uncond"], elem_id=self.elem_id("apply_uncond"))
 
             with gr.Tab(_t("base_tab")):
                 with gr.Row():
-                    base_row_count = gr.Number(label=_t("row_count"), value=3, precision=0, elem_id=self.elem_id("base_row_count"))
+                    base_row_count = gr.Number(label=_t("row_count"), value=defaults["base_count"], precision=0, elem_id=self.elem_id("base_row_count"))
                     base_apply_presets = gr.Button(_t("normalize_rows"), elem_id=self.elem_id("base_apply_presets"))
                 gr.Markdown(value=_t("shift_runtime_hint"))
                 gr.Markdown(value=f"**{_t('artist_table')}**")
-                base_row_components = _create_artist_row_controls("base", lang, default_rows, self.elem_id)
+                base_row_components = _create_artist_row_controls("base", lang, defaults["base_rows"], self.elem_id)
 
             with gr.Tab(_t("hires_tab")):
-                hires_independent = gr.Checkbox(label=_t("hires_independent"), value=False, elem_id=self.elem_id("hires_independent"))
+                hires_independent = gr.Checkbox(label=_t("hires_independent"), value=defaults["hires_independent"], elem_id=self.elem_id("hires_independent"))
                 with gr.Row():
-                    hires_row_count = gr.Number(label=_t("hr_row_count"), value=3, precision=0, elem_id=self.elem_id("hires_row_count"))
+                    hires_row_count = gr.Number(label=_t("hr_row_count"), value=defaults["hires_count"], precision=0, elem_id=self.elem_id("hires_row_count"))
                     hires_apply_presets = gr.Button(_t("normalize_rows"), elem_id=self.elem_id("hires_apply_presets"))
                 gr.Markdown(value=_t("shift_runtime_hint"))
                 gr.Markdown(value=f"**{_t('artist_table')}**")
-                hires_row_components = _create_artist_row_controls("hires", lang, default_rows, self.elem_id)
+                hires_row_components = _create_artist_row_controls("hires", lang, defaults["hires_rows"], self.elem_id)
 
             with gr.Tab(_t("template")):
                 with gr.Row():
-                    template_dropdown = gr.Dropdown(label=_t("template"), choices=_template_choices(), value=None, allow_custom_value=False, elem_id=self.elem_id("template_dropdown"))
-                    template_apply_target = gr.Dropdown(label=_t("apply_target"), choices=_option_choices("apply_target", lang), value=_option_label("apply_target", APPLY_BASE, lang), elem_id=self.elem_id("template_apply_target"))
+                    template_dropdown = gr.Dropdown(label=_t("template"), choices=_template_choices(), value=defaults["template_name"], allow_custom_value=False, elem_id=self.elem_id("template_dropdown"))
+                    template_apply_target = gr.Dropdown(label=_t("apply_target"), choices=_option_choices("apply_target", lang), value=defaults["template_target"], elem_id=self.elem_id("template_apply_target"))
                     template_apply = gr.Button(_t("apply_template"), variant="primary", elem_id=self.elem_id("template_apply"))
                 with gr.Row():
                     template_name = gr.Textbox(label=_t("template_name"), value="", elem_id=self.elem_id("template_name"))
@@ -1694,14 +1888,14 @@ class Script(scripts.Script):
             show_progress=False,
         )
         optimization.change(
-            fn=_apply_shift_to_components,
+            fn=_apply_optimization_to_components,
             inputs=[base_row_count, runtime_base_shift, optimization, *base_row_components],
             outputs=base_row_components,
             queue=False,
             show_progress=False,
         )
         optimization.change(
-            fn=_apply_shift_to_components,
+            fn=_apply_optimization_to_components,
             inputs=[hires_row_count, runtime_hires_shift, optimization, *hires_row_components],
             outputs=hires_row_components,
             queue=False,
@@ -1713,7 +1907,7 @@ class Script(scripts.Script):
         ):
             for offset in range(0, len(row_components), 10):
                 row_components[offset + 8].change(
-                    fn=_apply_shift_to_components,
+                    fn=partial(_apply_stage_to_components, offset // 10),
                     inputs=[row_count, runtime_shift, optimization, *row_components],
                     outputs=row_components,
                     queue=False,
@@ -1848,7 +2042,7 @@ class Script(scripts.Script):
         rows = hires_rows if getattr(p, "is_hr_pass", False) and hires_independent else base_rows
         optimization = _option_key("optimization", optimization, OPT_BALANCE)
         combine_mode = _option_key("combine", combine_mode, COMBINE_OUTPUT_AVG)
-        fusion_mode = _option_key("fusion", fusion_mode, FUSION_QUALITY_DELTA)
+        fusion_mode = _option_key("fusion", fusion_mode, FUSION_INTERPOLATE)
         try:
             artists = _build_artists(p, rows, len(dm.blocks), shift, optimization, bool(enable_cache))
         except Exception as exc:
@@ -1865,7 +2059,7 @@ class Script(scripts.Script):
         state = MixerState(
             run_id=uuid.uuid4().hex,
             enabled=True,
-            global_strength=_clamp(_to_float(global_strength, 0.55), 0.0, strength_limit),
+            global_strength=_clamp(_to_float(global_strength, 0.7), 0.0, strength_limit),
             combine_mode=combine_mode,
             fusion_mode=fusion_mode,
             apply_uncond=bool(apply_uncond),
@@ -1914,3 +2108,21 @@ class Script(scripts.Script):
                     state.combine_mode,
                     state.fusion_mode,
                 )
+                logger.info(
+                    "Anima artist mixer context path: fusion=%s uses_base_concat=%s",
+                    state.fusion_mode,
+                    state.fusion_mode in BASE_CONTEXT_FUSIONS,
+                )
+                if state.diff_probe is not None:
+                    logger.info(
+                        "Anima artist mixer diff probe: artist_delta_norm=%.4f artist_delta_ratio=%.4f",
+                        state.diff_probe[0],
+                        state.diff_probe[1],
+                    )
+                if state.mask_probe is not None:
+                    logger.info(
+                        "Anima artist mixer mask probe: cond_or_uncond_len=%d context_batch=%d apply_uncond=%s",
+                        state.mask_probe[0],
+                        state.mask_probe[1],
+                        state.apply_uncond,
+                    )

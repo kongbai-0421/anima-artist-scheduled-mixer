@@ -727,6 +727,72 @@ def _shift_sync_script(base_shift_id, hires_shift_id, is_img2img=False):
 """
 
 
+def _current_settings_autosave_script(root_id, trigger_id):
+    return f"""
+<script>
+(function() {{
+    const rootId = {json.dumps(root_id)};
+    const triggerId = {json.dumps(trigger_id)};
+    let timer = null;
+
+    function rootOf(id) {{
+        return document.getElementById(id);
+    }}
+
+    function buttonOf(id) {{
+        const root = rootOf(id);
+        return root ? root.querySelector("button") : null;
+    }}
+
+    function isInside(id, element) {{
+        const root = rootOf(id);
+        return root && element && root.contains(element);
+    }}
+
+    function triggerSave() {{
+        const button = buttonOf(triggerId);
+        if (button) {{
+            button.click();
+        }}
+    }}
+
+    function scheduleSave(event) {{
+        if (event && isInside(triggerId, event.target)) {{
+            return;
+        }}
+        window.clearTimeout(timer);
+        timer = window.setTimeout(triggerSave, 700);
+    }}
+
+    function attach() {{
+        const root = rootOf(rootId);
+        const button = buttonOf(triggerId);
+        if (!root || !button) {{
+            return false;
+        }}
+        if (root.dataset.animaArtistMixerAutosave === "1") {{
+            return true;
+        }}
+        root.dataset.animaArtistMixerAutosave = "1";
+        root.addEventListener("input", scheduleSave, true);
+        root.addEventListener("change", scheduleSave, true);
+        return true;
+    }}
+
+    if (!attach()) {{
+        let tries = 0;
+        const timerId = window.setInterval(function() {{
+            tries += 1;
+            if (attach() || tries > 40) {{
+                window.clearInterval(timerId);
+            }}
+        }}, 500);
+    }}
+}})();
+</script>
+"""
+
+
 def _create_artist_row_controls(prefix, lang, defaults, elem_id_func):
     labels = _row_component_headers(lang)
     components = []
@@ -2071,6 +2137,7 @@ class Script(scripts.Script):
         with gr.Accordion(_t("accordion"), open=False, elem_id=self.elem_id("accordion")):
             gr.HTML(table_css)
             gr.HTML(_shift_sync_script(self.elem_id("runtime_base_shift"), self.elem_id("runtime_hires_shift"), is_img2img=is_img2img))
+            gr.HTML(_current_settings_autosave_script(self.elem_id("accordion"), self.elem_id("save_current_settings")))
             with gr.Row():
                 intro_language = gr.Radio(
                     choices=["English", "中文"],
@@ -2084,6 +2151,7 @@ class Script(scripts.Script):
 
             runtime_base_shift = gr.Number(value=3.0, visible=False, elem_id=self.elem_id("runtime_base_shift"))
             runtime_hires_shift = gr.Number(value=3.0, visible=False, elem_id=self.elem_id("runtime_hires_shift"))
+            save_current_settings = gr.Button(value="Save current settings", visible=False, elem_id=self.elem_id("save_current_settings"))
             enable = gr.Checkbox(label=_t("enable"), value=defaults["enable"], elem_id=self.elem_id("enable"))
             with gr.Row():
                 optimization = gr.Dropdown(label=_t("optimization"), choices=_option_choices("optimization", lang), value=defaults["optimization"], elem_id=self.elem_id("optimization"))
@@ -2324,14 +2392,13 @@ class Script(scripts.Script):
             *base_row_components,
             *hires_row_components,
         ]
-        for component in current_settings_inputs:
-            component.change(
-                fn=_save_current_settings_ui,
-                inputs=current_settings_inputs,
-                outputs=[],
-                queue=False,
-                show_progress=False,
-            )
+        save_current_settings.click(
+            fn=_save_current_settings_ui,
+            inputs=current_settings_inputs,
+            outputs=[],
+            queue=False,
+            show_progress=False,
+        )
 
         return [
             enable,

@@ -11,7 +11,10 @@ Special thanks to **An1X3R/Anima-Artist-Mixer** and **汐浮尘/utowo** for the 
 - Per-artist rows with artist prompt, weight, block range, denoise time range, peak, curve, and stage preset.
 - Inline row weights in the artist cell, for example `(wlop:1.2)`, `[wlop:0.8]`, or `wlop:1.2`; this multiplier is combined with the row `Weight`.
 - Separate Base and Hires. fix artist chains. Hires. fix is disabled by default and inherits Base settings.
-- Template save, apply, rename, and delete. The last applied template is restored as the next UI default, and all values remain editable after applying a template.
+- Current settings are saved automatically when controls change, then restored after refreshing the UI or restarting Forge.
+- Template save, apply, rename, and delete. Templates remain editable after applying and can be reused across sessions.
+- Reset all settings to the built-in defaults when you want a clean state.
+- Optional switch to disable artist mixing during Hires. fix while keeping it active for the base pass.
 - Templates store stable internal values and can be applied across English/Chinese UI modes.
 - Localized option labels for optimization presets, combine mode, fusion mode, curve, stage, and template target.
 - Performance, Balance, and Quality optimization presets. Balance is the default.
@@ -24,6 +27,14 @@ Special thanks to **An1X3R/Anima-Artist-Mixer** and **汐浮尘/utowo** for the 
 Each row is intended to hold one artist prompt. This gives separate control over weight, blocks, timing, curve, and stage. Comma-separated artist chains still work for quick migration, but one artist per row is recommended for predictable scheduling.
 
 `Stage + Shift + Auto Shift` rewrites the row time window in a way similar to Anima LoRA Stage Scheduler: Composition is early, Character is middle, and Style is late. Selecting a non-Custom stage refreshes Start, End, and Peak immediately. Turn off Auto Shift afterward when you want to fine-tune those values manually.
+
+## Settings And Templates
+
+Changing any main control updates `artist_mixer_current_settings.json` locally. That file is ignored by git and is used only to restore your last UI state after a refresh or restart.
+
+Use `Reset all to defaults` to clear the local current-settings file and restore the built-in defaults. Template files are not deleted by reset.
+
+The Hires. fix tab includes `Disable artist mixing during Hires. fix`. When enabled, the plugin unpatches before the Hires pass and leaves Hires. fix generation untouched.
 
 ## Recommended Defaults
 

@@ -18,6 +18,7 @@ logger = logging.getLogger("anima_artist_scheduled_mixer")
 
 EXTENSION_DIR = Path(__file__).resolve().parents[1]
 TEMPLATE_FILE = EXTENSION_DIR / "artist_mixer_templates.json"
+CURRENT_SETTINGS_FILE = EXTENSION_DIR / "artist_mixer_current_settings.json"
 REFERENCE_URL = "https://github.com/An1X3R/Anima-Artist-Mixer"
 
 LANGUAGE_OPTION = "anima_artist_scheduled_mixer_language"
@@ -172,6 +173,7 @@ LANG = {
         "base_panel": "底图画师",
         "hires_panel": "高分辨率修复画师",
         "hires_independent": "高分辨率修复使用独立画师串；关闭时继承底图设置",
+        "disable_hires_mixing": "高分辨率修复不启用画师串混合",
         "row_count": "画师行数",
         "hr_row_count": "高分画师行数",
         "shift_runtime_hint": "阶段/自动偏移读取生成参数区当前 Shift；生成时会再次读取实际底图/高分 Shift。",
@@ -190,6 +192,7 @@ LANG = {
         "rename_to": "重命名为",
         "rename_template": "重命名模板",
         "delete_template": "删除模板",
+        "reset_defaults": "全部恢复默认",
         "apply_target": "模板应用目标",
         "apply_template": "应用模板",
         "normalize_rows": "刷新阶段预设",
@@ -204,6 +207,7 @@ LANG = {
         "deleted_template": "已删除模板：{name}",
         "no_template_deleted": "没有删除任何模板。",
         "applied_template": "已将模板 `{name}` 应用到{target}。",
+        "defaults_restored": "已恢复全部默认设置。",
     },
     "en": {
         "title": "Anima Artist Scheduled Mixer",
@@ -218,6 +222,7 @@ LANG = {
         "base_panel": "Base artists",
         "hires_panel": "Hires. fix artists",
         "hires_independent": "Use independent Hires. fix artist chain; disabled = inherit base settings",
+        "disable_hires_mixing": "Disable artist mixing during Hires. fix",
         "row_count": "Artist rows",
         "hr_row_count": "Hires artist rows",
         "shift_runtime_hint": "Stage/Auto Shift reads the current Shift from the generation panel; sampling reads the actual Base/Hires Shift again.",
@@ -236,6 +241,7 @@ LANG = {
         "rename_to": "Rename to",
         "rename_template": "Rename template",
         "delete_template": "Delete template",
+        "reset_defaults": "Reset all to defaults",
         "apply_target": "Apply target",
         "apply_template": "Apply template",
         "normalize_rows": "Refresh stage presets",
@@ -250,6 +256,7 @@ LANG = {
         "deleted_template": "Deleted template: {name}",
         "no_template_deleted": "No template deleted.",
         "applied_template": "Applied template `{name}` to {target}.",
+        "defaults_restored": "Restored all settings to defaults.",
     },
 }
 
@@ -1051,7 +1058,21 @@ def _template_dropdown_update(value=None):
     return gr.update(choices=choices, value=value)
 
 
-def _save_template_record(name, row_key, rows, row_count, shift, global_strength, optimization, combine_mode, fusion_mode, apply_uncond, enable_cache, status_key):
+def _save_template_record(
+    name,
+    row_key,
+    rows,
+    row_count,
+    shift,
+    disable_hires_mixing,
+    global_strength,
+    optimization,
+    combine_mode,
+    fusion_mode,
+    apply_uncond,
+    enable_cache,
+    status_key,
+):
     name = str(name or "").strip()
     if not name:
         return _template_dropdown_update(), _t("empty_template_name")
@@ -1064,6 +1085,7 @@ def _save_template_record(name, row_key, rows, row_count, shift, global_strength
     data[name] = {
         row_key: _normalize_rows(rows, row_count, shift, optimization_key, display=False),
         "hires_independent": row_key == "hires_rows",
+        "disable_hires_mixing": bool(disable_hires_mixing),
         "global_strength": _to_float(global_strength, 0.7),
         "optimization": optimization_key,
         "combine_mode": combine_key,
@@ -1075,7 +1097,7 @@ def _save_template_record(name, row_key, rows, row_count, shift, global_strength
     return _template_dropdown_update(name), _t(status_key).format(name=name)
 
 
-def _save_base_template_ui(name, base_row_count, base_shift, global_strength, optimization, combine_mode, fusion_mode, apply_uncond, enable_cache, *base_values):
+def _save_base_template_ui(name, base_row_count, base_shift, disable_hires_mixing, global_strength, optimization, combine_mode, fusion_mode, apply_uncond, enable_cache, *base_values):
     base_rows = _rows_from_components(*base_values)
     return _save_template_record(
         name,
@@ -1083,6 +1105,7 @@ def _save_base_template_ui(name, base_row_count, base_shift, global_strength, op
         base_rows,
         base_row_count,
         base_shift,
+        disable_hires_mixing,
         global_strength,
         optimization,
         combine_mode,
@@ -1093,7 +1116,7 @@ def _save_base_template_ui(name, base_row_count, base_shift, global_strength, op
     )
 
 
-def _save_hires_template_ui(name, hires_independent, hires_row_count, hires_shift, global_strength, optimization, combine_mode, fusion_mode, apply_uncond, enable_cache, *hires_values):
+def _save_hires_template_ui(name, hires_independent, hires_row_count, hires_shift, disable_hires_mixing, global_strength, optimization, combine_mode, fusion_mode, apply_uncond, enable_cache, *hires_values):
     if not _to_bool(hires_independent, False):
         return _template_dropdown_update(), _t("hires_template_disabled")
     hires_rows = _rows_from_components(*hires_values)
@@ -1103,6 +1126,7 @@ def _save_hires_template_ui(name, hires_independent, hires_row_count, hires_shif
         hires_rows,
         hires_row_count,
         hires_shift,
+        disable_hires_mixing,
         global_strength,
         optimization,
         combine_mode,
@@ -1136,7 +1160,8 @@ def _delete_template_ui(name):
     return _template_dropdown_update(), _t("no_template_deleted")
 
 
-def _initial_ui_defaults(lang):
+def _builtin_default_ui_state(lang):
+    enable = False
     base_shift = 3.0
     hires_shift = 3.0
     base_count = DEFAULT_ARTIST_ROWS
@@ -1147,48 +1172,16 @@ def _initial_ui_defaults(lang):
     apply_target_key = APPLY_BASE
     global_strength = 0.7
     hires_independent = False
+    disable_hires_mixing = False
     apply_uncond = False
     enable_cache = True
-    template_name = _last_template_name()
+    template_name = None
 
     base_rows = _normalize_rows(_default_rows(base_count, base_shift, optimization_key), base_count, base_shift, optimization_key)
     hires_rows = _normalize_rows(_default_rows(hires_count, hires_shift, optimization_key), hires_count, hires_shift, optimization_key)
 
-    tpl = _template_data().get(template_name) if template_name else None
-    if isinstance(tpl, dict):
-        optimization_key = _option_key("optimization", tpl.get("optimization"), OPT_BALANCE)
-        combine_key = _option_key("combine", tpl.get("combine_mode"), COMBINE_OUTPUT_AVG)
-        fusion_key = _option_key("fusion", tpl.get("fusion_mode"), FUSION_INTERPOLATE)
-        apply_target_key = _last_template_target()
-        global_strength = _to_float(tpl.get("global_strength"), global_strength)
-        hires_independent = bool(tpl.get("hires_independent", False))
-        apply_uncond = bool(tpl.get("apply_uncond", False))
-        enable_cache = bool(tpl.get("enable_cache", True))
-
-        has_base_rows = bool(tpl.get("base_rows"))
-        has_hires_rows = bool(tpl.get("hires_rows"))
-        fallback_optimization = optimization_key if has_base_rows or has_hires_rows else OPT_BALANCE
-        base_tpl = _normalize_rows(
-            tpl.get("base_rows") or tpl.get("hires_rows") or base_rows,
-            None,
-            base_shift,
-            fallback_optimization,
-        )
-        hires_tpl = _normalize_rows(
-            tpl.get("hires_rows") or tpl.get("base_rows") or hires_rows,
-            None,
-            hires_shift,
-            fallback_optimization,
-        )
-
-        if apply_target_key in {APPLY_BASE, APPLY_BOTH}:
-            base_rows = base_tpl
-            base_count = max(1, len(base_tpl))
-        if apply_target_key in {APPLY_HIRES, APPLY_BOTH}:
-            hires_rows = hires_tpl
-            hires_count = max(1, len(hires_tpl))
-
     return {
+        "enable": enable,
         "template_name": template_name,
         "template_target": _option_label("apply_target", apply_target_key, lang),
         "base_count": base_count,
@@ -1196,6 +1189,7 @@ def _initial_ui_defaults(lang):
         "base_rows": base_rows,
         "hires_rows": hires_rows,
         "hires_independent": hires_independent,
+        "disable_hires_mixing": disable_hires_mixing,
         "global_strength": global_strength,
         "optimization": _option_label("optimization", optimization_key, lang),
         "combine": _option_label("combine", combine_key, lang),
@@ -1205,12 +1199,165 @@ def _initial_ui_defaults(lang):
     }
 
 
+def _current_settings_data():
+    if not CURRENT_SETTINGS_FILE.exists():
+        return None
+    try:
+        with CURRENT_SETTINGS_FILE.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        logger.exception("Failed to load Anima artist mixer current settings")
+        return None
+
+
+def _save_current_settings_data(data):
+    try:
+        CURRENT_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with CURRENT_SETTINGS_FILE.open("w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        logger.exception("Failed to save Anima artist mixer current settings")
+
+
+def _delete_current_settings_data():
+    try:
+        if CURRENT_SETTINGS_FILE.exists():
+            CURRENT_SETTINGS_FILE.unlink()
+    except Exception:
+        logger.exception("Failed to delete Anima artist mixer current settings")
+
+
+def _state_from_current_settings(data, lang):
+    if not isinstance(data, dict):
+        return None
+    optimization_key = _option_key("optimization", data.get("optimization"), OPT_BALANCE)
+    combine_key = _option_key("combine", data.get("combine_mode"), COMBINE_OUTPUT_AVG)
+    fusion_key = _option_key("fusion", data.get("fusion_mode"), FUSION_INTERPOLATE)
+    apply_target_key = _option_key("apply_target", data.get("template_target"), APPLY_BASE)
+    base_shift = _to_float(data.get("base_shift"), 3.0)
+    hires_shift = _to_float(data.get("hires_shift"), 3.0)
+    base_count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(data.get("base_count"), DEFAULT_ARTIST_ROWS))))
+    hires_count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(data.get("hires_count"), DEFAULT_ARTIST_ROWS))))
+    base_rows = _normalize_rows(data.get("base_rows"), base_count, base_shift, optimization_key)
+    hires_rows = _normalize_rows(data.get("hires_rows"), hires_count, hires_shift, optimization_key)
+    template_name = str(data.get("template_name") or "").strip()
+    if template_name and template_name not in _template_data():
+        template_name = None
+    return {
+        "enable": bool(data.get("enable", False)),
+        "template_name": template_name,
+        "template_target": _option_label("apply_target", apply_target_key, lang),
+        "base_count": base_count,
+        "hires_count": hires_count,
+        "base_rows": base_rows,
+        "hires_rows": hires_rows,
+        "hires_independent": bool(data.get("hires_independent", False)),
+        "disable_hires_mixing": bool(data.get("disable_hires_mixing", False)),
+        "global_strength": _to_float(data.get("global_strength"), 0.7),
+        "optimization": _option_label("optimization", optimization_key, lang),
+        "combine": _option_label("combine", combine_key, lang),
+        "fusion": _option_label("fusion", fusion_key, lang),
+        "apply_uncond": bool(data.get("apply_uncond", False)),
+        "enable_cache": bool(data.get("enable_cache", True)),
+    }
+
+
+def _initial_ui_defaults(lang):
+    current = _state_from_current_settings(_current_settings_data(), lang)
+    return current if current is not None else _builtin_default_ui_state(lang)
+
+
+def _current_settings_payload(
+    enable,
+    template_name,
+    template_target,
+    base_row_count,
+    hires_row_count,
+    hires_independent,
+    disable_hires_mixing,
+    base_shift,
+    hires_shift,
+    global_strength,
+    optimization,
+    combine_mode,
+    fusion_mode,
+    apply_uncond,
+    enable_cache,
+    *component_values,
+):
+    optimization_key = _option_key("optimization", optimization, OPT_BALANCE)
+    base_values = component_values[: MAX_ARTIST_ROWS * 10]
+    hires_values = component_values[MAX_ARTIST_ROWS * 10 : MAX_ARTIST_ROWS * 20]
+    base_shift = _to_float(base_shift, 3.0)
+    hires_shift = _to_float(hires_shift, 3.0)
+    base_count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(base_row_count, DEFAULT_ARTIST_ROWS))))
+    hires_count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(hires_row_count, DEFAULT_ARTIST_ROWS))))
+    return {
+        "version": 1,
+        "enable": bool(enable),
+        "template_name": str(template_name or "").strip(),
+        "template_target": _option_key("apply_target", template_target, APPLY_BASE),
+        "base_count": base_count,
+        "hires_count": hires_count,
+        "base_shift": base_shift,
+        "hires_shift": hires_shift,
+        "base_rows": _normalize_rows(_rows_from_components(*base_values), base_count, base_shift, optimization_key, display=False),
+        "hires_rows": _normalize_rows(_rows_from_components(*hires_values), hires_count, hires_shift, optimization_key, display=False),
+        "hires_independent": bool(hires_independent),
+        "disable_hires_mixing": bool(disable_hires_mixing),
+        "global_strength": _to_float(global_strength, 0.7),
+        "optimization": optimization_key,
+        "combine_mode": _option_key("combine", combine_mode, COMBINE_OUTPUT_AVG),
+        "fusion_mode": _option_key("fusion", fusion_mode, FUSION_INTERPOLATE),
+        "apply_uncond": bool(apply_uncond),
+        "enable_cache": bool(enable_cache),
+    }
+
+
+def _save_current_settings_ui(*values):
+    _save_current_settings_data(_current_settings_payload(*values))
+
+
+def _default_state_updates(lang=None, status_text=None):
+    lang = lang or _language()
+    state = _builtin_default_ui_state(lang)
+    base_updates = _component_values_from_rows(state["base_rows"], 3.0, state["optimization"], state["base_count"])
+    hires_updates = _component_values_from_rows(state["hires_rows"], 3.0, state["optimization"], state["hires_count"])
+    return (
+        gr.update(value=state["enable"], interactive=True),
+        gr.update(value=state["template_name"]),
+        gr.update(value=state["template_target"]),
+        gr.update(value=state["base_count"], interactive=True),
+        gr.update(value=state["hires_count"], interactive=True),
+        gr.update(value=state["hires_independent"], interactive=True),
+        gr.update(value=state["disable_hires_mixing"], interactive=True),
+        gr.update(value=3.0),
+        gr.update(value=3.0),
+        gr.update(value=state["global_strength"], interactive=True),
+        gr.update(value=state["optimization"], interactive=True),
+        gr.update(value=state["combine"], interactive=True),
+        gr.update(value=state["fusion"], interactive=True),
+        gr.update(value=state["apply_uncond"], interactive=True),
+        gr.update(value=state["enable_cache"], interactive=True),
+        _t("defaults_restored") if status_text is None else status_text,
+        *base_updates,
+        *hires_updates,
+    )
+
+
+def _reset_all_defaults_ui():
+    _delete_current_settings_data()
+    return _default_state_updates()
+
+
 def _apply_template_updates(name, target, base_row_count, hires_row_count, current_base_shift, current_hires_shift, current_optimization, component_values, remember=False, status_text=None):
     base_values = component_values[: MAX_ARTIST_ROWS * 10]
     hires_values = component_values[MAX_ARTIST_ROWS * 10 : MAX_ARTIST_ROWS * 20]
     base_current = _rows_from_components(*base_values)
     hires_current = _rows_from_components(*hires_values)
     no_selection = (
+        gr.update(),
         gr.update(),
         gr.update(),
         gr.update(),
@@ -1262,6 +1409,7 @@ def _apply_template_updates(name, target, base_row_count, hires_row_count, curre
         gr.update(value=base_count_value, interactive=True),
         gr.update(value=hires_count_value, interactive=True),
         gr.update(value=tpl.get("hires_independent", False), interactive=True),
+        gr.update(value=tpl.get("disable_hires_mixing", False), interactive=True),
         gr.update(),
         gr.update(),
         gr.update(value=tpl.get("global_strength", 0.7), interactive=True),
@@ -1292,6 +1440,7 @@ def _apply_template_ui(name, target, base_row_count, hires_row_count, current_ba
 
 def _blank_template_updates(status_text=""):
     return (
+        gr.update(),
         gr.update(),
         gr.update(),
         gr.update(),
@@ -1935,7 +2084,7 @@ class Script(scripts.Script):
 
             runtime_base_shift = gr.Number(value=3.0, visible=False, elem_id=self.elem_id("runtime_base_shift"))
             runtime_hires_shift = gr.Number(value=3.0, visible=False, elem_id=self.elem_id("runtime_hires_shift"))
-            enable = gr.Checkbox(label=_t("enable"), value=False, elem_id=self.elem_id("enable"))
+            enable = gr.Checkbox(label=_t("enable"), value=defaults["enable"], elem_id=self.elem_id("enable"))
             with gr.Row():
                 optimization = gr.Dropdown(label=_t("optimization"), choices=_option_choices("optimization", lang), value=defaults["optimization"], elem_id=self.elem_id("optimization"))
                 global_strength = gr.Slider(label=_t("global_strength"), minimum=0.0, maximum=2.0, step=0.01, value=defaults["global_strength"], elem_id=self.elem_id("global_strength"))
@@ -1955,6 +2104,7 @@ class Script(scripts.Script):
 
             with gr.Tab(_t("hires_tab")):
                 hires_independent = gr.Checkbox(label=_t("hires_independent"), value=defaults["hires_independent"], elem_id=self.elem_id("hires_independent"))
+                disable_hires_mixing = gr.Checkbox(label=_t("disable_hires_mixing"), value=defaults["disable_hires_mixing"], elem_id=self.elem_id("disable_hires_mixing"))
                 with gr.Row():
                     hires_row_count = gr.Number(label=_t("hr_row_count"), value=defaults["hires_count"], precision=0, elem_id=self.elem_id("hires_row_count"))
                     hires_apply_presets = gr.Button(_t("normalize_rows"), elem_id=self.elem_id("hires_apply_presets"))
@@ -1975,6 +2125,7 @@ class Script(scripts.Script):
                     rename_to = gr.Textbox(label=_t("rename_to"), value="", elem_id=self.elem_id("rename_to"))
                     rename_button = gr.Button(_t("rename_template"), elem_id=self.elem_id("rename_button"))
                     delete_button = gr.Button(_t("delete_template"), elem_id=self.elem_id("delete_button"))
+                    reset_defaults_button = gr.Button(_t("reset_defaults"), elem_id=self.elem_id("reset_defaults_button"))
                 template_status = gr.Markdown(value="", elem_id=self.elem_id("template_status"))
 
             with gr.Tab(_t("help")):
@@ -2070,6 +2221,7 @@ class Script(scripts.Script):
                 template_name,
                 base_row_count,
                 runtime_base_shift,
+                disable_hires_mixing,
                 global_strength,
                 optimization,
                 combine_mode,
@@ -2089,6 +2241,7 @@ class Script(scripts.Script):
                 hires_independent,
                 hires_row_count,
                 runtime_hires_shift,
+                disable_hires_mixing,
                 global_strength,
                 optimization,
                 combine_mode,
@@ -2110,6 +2263,7 @@ class Script(scripts.Script):
                 base_row_count,
                 hires_row_count,
                 hires_independent,
+                disable_hires_mixing,
                 runtime_base_shift,
                 runtime_hires_shift,
                 global_strength,
@@ -2125,15 +2279,17 @@ class Script(scripts.Script):
             queue=False,
             show_progress=False,
         )
-        _root_block_load(
-            fn=_apply_last_template_on_load_ui,
-            inputs=[base_row_count, hires_row_count, runtime_base_shift, runtime_hires_shift, optimization, *base_row_components, *hires_row_components],
+        reset_defaults_button.click(
+            fn=_reset_all_defaults_ui,
+            inputs=[],
             outputs=[
+                enable,
                 template_dropdown,
                 template_apply_target,
                 base_row_count,
                 hires_row_count,
                 hires_independent,
+                disable_hires_mixing,
                 runtime_base_shift,
                 runtime_hires_shift,
                 global_strength,
@@ -2149,12 +2305,40 @@ class Script(scripts.Script):
             queue=False,
             show_progress=False,
         )
+        current_settings_inputs = [
+            enable,
+            template_dropdown,
+            template_apply_target,
+            base_row_count,
+            hires_row_count,
+            hires_independent,
+            disable_hires_mixing,
+            runtime_base_shift,
+            runtime_hires_shift,
+            global_strength,
+            optimization,
+            combine_mode,
+            fusion_mode,
+            apply_uncond,
+            enable_cache,
+            *base_row_components,
+            *hires_row_components,
+        ]
+        for component in current_settings_inputs:
+            component.change(
+                fn=_save_current_settings_ui,
+                inputs=current_settings_inputs,
+                outputs=[],
+                queue=False,
+                show_progress=False,
+            )
 
         return [
             enable,
             base_row_count,
             hires_row_count,
             hires_independent,
+            disable_hires_mixing,
             runtime_base_shift,
             runtime_hires_shift,
             global_strength,
@@ -2169,13 +2353,14 @@ class Script(scripts.Script):
 
     def process_before_every_sampling(self, p, *args, **kwargs):
         global _ACTIVE_STATE
-        if len(args) < 12:
+        if len(args) < 13:
             return
         (
             enable,
             base_row_count,
             hires_row_count,
             hires_independent,
+            disable_hires_mixing,
             runtime_base_shift,
             runtime_hires_shift,
             global_strength,
@@ -2184,14 +2369,16 @@ class Script(scripts.Script):
             fusion_mode,
             apply_uncond,
             enable_cache,
-        ) = args[:12]
-        component_values = args[12:]
+        ) = args[:13]
+        component_values = args[13:]
         base_values = component_values[: MAX_ARTIST_ROWS * 10]
         hires_values = component_values[MAX_ARTIST_ROWS * 10 : MAX_ARTIST_ROWS * 20]
 
         _unpatch_cross_attn()
         _ACTIVE_STATE = None
         if not enable:
+            return
+        if getattr(p, "is_hr_pass", False) and bool(disable_hires_mixing):
             return
         if getattr(p, "_ad_inner", False):
             return

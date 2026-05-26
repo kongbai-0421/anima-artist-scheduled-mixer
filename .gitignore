@@ -32,6 +32,7 @@ config.json
 ui-config.json
 params.txt
 artist_mixer_templates.json
+artist_mixer_current_settings.json
 artist_mixer_cache/
 intro_language.json
 

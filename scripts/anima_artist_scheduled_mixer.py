@@ -1383,6 +1383,7 @@ def _current_settings_payload(
 
 def _save_current_settings_ui(*values):
     _save_current_settings_data(_current_settings_payload(*values))
+    return ""
 
 
 def _default_state_updates(lang=None, status_text=None):
@@ -2132,6 +2133,9 @@ class Script(scripts.Script):
         #{self.elem_id("accordion")} button[title*="Sort"] {{
             display: none !important;
         }}
+        #{self.elem_id("save_current_settings_row")} {{
+            display: none !important;
+        }}
         </style>
         """
         with gr.Accordion(_t("accordion"), open=False, elem_id=self.elem_id("accordion")):
@@ -2151,7 +2155,9 @@ class Script(scripts.Script):
 
             runtime_base_shift = gr.Number(value=3.0, visible=False, elem_id=self.elem_id("runtime_base_shift"))
             runtime_hires_shift = gr.Number(value=3.0, visible=False, elem_id=self.elem_id("runtime_hires_shift"))
-            save_current_settings = gr.Button(value="Save current settings", visible=False, elem_id=self.elem_id("save_current_settings"))
+            with gr.Row(elem_id=self.elem_id("save_current_settings_row")):
+                save_current_settings = gr.Button(value="Save current settings", elem_id=self.elem_id("save_current_settings"))
+                save_current_settings_status = gr.Markdown(value="", elem_id=self.elem_id("save_current_settings_status"))
             enable = gr.Checkbox(label=_t("enable"), value=defaults["enable"], elem_id=self.elem_id("enable"))
             with gr.Row():
                 optimization = gr.Dropdown(label=_t("optimization"), choices=_option_choices("optimization", lang), value=defaults["optimization"], elem_id=self.elem_id("optimization"))
@@ -2395,7 +2401,7 @@ class Script(scripts.Script):
         save_current_settings.click(
             fn=_save_current_settings_ui,
             inputs=current_settings_inputs,
-            outputs=[],
+            outputs=[save_current_settings_status],
             queue=False,
             show_progress=False,
         )

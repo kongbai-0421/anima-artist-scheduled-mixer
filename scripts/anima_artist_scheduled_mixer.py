@@ -1386,6 +1386,11 @@ def _save_current_settings_ui(*values):
     return ""
 
 
+def _do_not_save_to_ui_config(*components):
+    for component in components:
+        setattr(component, "do_not_save_to_config", True)
+
+
 def _default_state_updates(lang=None, status_text=None):
     lang = lang or _language()
     state = _builtin_default_ui_state(lang)
@@ -2398,6 +2403,7 @@ class Script(scripts.Script):
             *base_row_components,
             *hires_row_components,
         ]
+        _do_not_save_to_ui_config(save_current_settings, *current_settings_inputs)
         save_current_settings.click(
             fn=_save_current_settings_ui,
             inputs=current_settings_inputs,

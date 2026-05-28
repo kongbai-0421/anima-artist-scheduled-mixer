@@ -776,6 +776,7 @@ def _current_settings_autosave_script(root_id, trigger_id):
         root.dataset.animaArtistMixerAutosave = "1";
         root.addEventListener("input", scheduleSave, true);
         root.addEventListener("change", scheduleSave, true);
+        root.addEventListener("click", scheduleSave, true);
         return true;
     }}
 
@@ -1386,9 +1387,54 @@ def _save_current_settings_ui(*values):
     return ""
 
 
+def _save_runtime_current_settings(
+    enable,
+    base_row_count,
+    hires_row_count,
+    hires_independent,
+    disable_hires_mixing,
+    runtime_base_shift,
+    runtime_hires_shift,
+    global_strength,
+    optimization,
+    combine_mode,
+    fusion_mode,
+    apply_uncond,
+    enable_cache,
+    *component_values,
+):
+    try:
+        _save_current_settings_data(
+            _current_settings_payload(
+                enable,
+                "",
+                APPLY_BASE,
+                base_row_count,
+                hires_row_count,
+                hires_independent,
+                disable_hires_mixing,
+                runtime_base_shift,
+                runtime_hires_shift,
+                global_strength,
+                optimization,
+                combine_mode,
+                fusion_mode,
+                apply_uncond,
+                enable_cache,
+                *component_values,
+            )
+        )
+    except Exception:
+        logger.exception("Failed to save Anima artist mixer runtime settings")
+
+
 def _do_not_save_to_ui_config(*components):
     for component in components:
         setattr(component, "do_not_save_to_config", True)
+
+
+def _internal_event_kwargs():
+    return {"api_name": False, "show_api": False}
 
 
 def _default_state_updates(lang=None, status_text=None):
@@ -2156,7 +2202,7 @@ class Script(scripts.Script):
                 )
             intro = gr.Markdown(value=_intro_default(lang), elem_id=self.elem_id("intro"))
             intro_status = gr.Markdown(value="", elem_id=self.elem_id("intro_status"))
-            intro_language.change(fn=_save_ui_language, inputs=[intro_language], outputs=[intro, intro_status], queue=False, show_progress=False)
+            intro_language.change(fn=_save_ui_language, inputs=[intro_language], outputs=[intro, intro_status], queue=False, show_progress=False, **_internal_event_kwargs())
 
             runtime_base_shift = gr.Number(value=3.0, visible=False, elem_id=self.elem_id("runtime_base_shift"))
             runtime_hires_shift = gr.Number(value=3.0, visible=False, elem_id=self.elem_id("runtime_hires_shift"))
@@ -2216,6 +2262,7 @@ class Script(scripts.Script):
             outputs=base_row_components,
             queue=False,
             show_progress=False,
+            **_internal_event_kwargs(),
         )
         hires_row_count.change(
             fn=_resize_row_components,
@@ -2223,6 +2270,7 @@ class Script(scripts.Script):
             outputs=hires_row_components,
             queue=False,
             show_progress=False,
+            **_internal_event_kwargs(),
         )
         runtime_base_shift.change(
             fn=_apply_shift_to_timing_components,
@@ -2230,6 +2278,7 @@ class Script(scripts.Script):
             outputs=_row_outputs(base_row_components, (4, 5, 6)),
             queue=False,
             show_progress=False,
+            **_internal_event_kwargs(),
         )
         runtime_hires_shift.change(
             fn=_apply_shift_to_timing_components,
@@ -2237,6 +2286,7 @@ class Script(scripts.Script):
             outputs=_row_outputs(hires_row_components, (4, 5, 6)),
             queue=False,
             show_progress=False,
+            **_internal_event_kwargs(),
         )
         base_apply_presets.click(
             fn=_resize_row_components,
@@ -2244,6 +2294,7 @@ class Script(scripts.Script):
             outputs=base_row_components,
             queue=False,
             show_progress=False,
+            **_internal_event_kwargs(),
         )
         hires_apply_presets.click(
             fn=_resize_row_components,
@@ -2251,6 +2302,7 @@ class Script(scripts.Script):
             outputs=hires_row_components,
             queue=False,
             show_progress=False,
+            **_internal_event_kwargs(),
         )
         optimization.change(
             fn=_apply_optimization_to_block_timing_components,
@@ -2258,6 +2310,7 @@ class Script(scripts.Script):
             outputs=_row_outputs(base_row_components, (3, 4, 5, 6)),
             queue=False,
             show_progress=False,
+            **_internal_event_kwargs(),
         )
         optimization.change(
             fn=_apply_optimization_to_block_timing_components,
@@ -2265,6 +2318,7 @@ class Script(scripts.Script):
             outputs=_row_outputs(hires_row_components, (3, 4, 5, 6)),
             queue=False,
             show_progress=False,
+            **_internal_event_kwargs(),
         )
         for row_components, row_count, runtime_shift in (
             (base_row_components, base_row_count, runtime_base_shift),
@@ -2282,6 +2336,7 @@ class Script(scripts.Script):
                     ],
                     queue=False,
                     show_progress=False,
+                    **_internal_event_kwargs(),
                 )
                 row_components[offset + 9].change(
                     fn=partial(_apply_auto_shift_to_row_components, offset // 10),
@@ -2293,6 +2348,7 @@ class Script(scripts.Script):
                     ],
                     queue=False,
                     show_progress=False,
+                    **_internal_event_kwargs(),
                 )
         template_save_base.click(
             fn=_save_base_template_ui,
@@ -2312,6 +2368,7 @@ class Script(scripts.Script):
             outputs=[template_dropdown, template_status],
             queue=False,
             show_progress=False,
+            **_internal_event_kwargs(),
         )
         template_save_hires.click(
             fn=_save_hires_template_ui,
@@ -2332,9 +2389,10 @@ class Script(scripts.Script):
             outputs=[template_dropdown, template_status],
             queue=False,
             show_progress=False,
+            **_internal_event_kwargs(),
         )
-        rename_button.click(fn=_rename_template_ui, inputs=[template_dropdown, rename_to], outputs=[template_dropdown, template_status], queue=False, show_progress=False)
-        delete_button.click(fn=_delete_template_ui, inputs=[template_dropdown], outputs=[template_dropdown, template_status], queue=False, show_progress=False)
+        rename_button.click(fn=_rename_template_ui, inputs=[template_dropdown, rename_to], outputs=[template_dropdown, template_status], queue=False, show_progress=False, **_internal_event_kwargs())
+        delete_button.click(fn=_delete_template_ui, inputs=[template_dropdown], outputs=[template_dropdown, template_status], queue=False, show_progress=False, **_internal_event_kwargs())
         template_apply.click(
             fn=_apply_template_ui,
             inputs=[template_dropdown, template_apply_target, base_row_count, hires_row_count, runtime_base_shift, runtime_hires_shift, optimization, *base_row_components, *hires_row_components],
@@ -2357,6 +2415,7 @@ class Script(scripts.Script):
             ],
             queue=False,
             show_progress=False,
+            **_internal_event_kwargs(),
         )
         reset_defaults_button.click(
             fn=_reset_all_defaults_ui,
@@ -2383,6 +2442,7 @@ class Script(scripts.Script):
             ],
             queue=False,
             show_progress=False,
+            **_internal_event_kwargs(),
         )
         current_settings_inputs = [
             enable,
@@ -2410,6 +2470,7 @@ class Script(scripts.Script):
             outputs=[save_current_settings_status],
             queue=False,
             show_progress=False,
+            **_internal_event_kwargs(),
         )
 
         return [
@@ -2452,6 +2513,22 @@ class Script(scripts.Script):
         component_values = args[13:]
         base_values = component_values[: MAX_ARTIST_ROWS * 10]
         hires_values = component_values[MAX_ARTIST_ROWS * 10 : MAX_ARTIST_ROWS * 20]
+        _save_runtime_current_settings(
+            enable,
+            base_row_count,
+            hires_row_count,
+            hires_independent,
+            disable_hires_mixing,
+            runtime_base_shift,
+            runtime_hires_shift,
+            global_strength,
+            optimization,
+            combine_mode,
+            fusion_mode,
+            apply_uncond,
+            enable_cache,
+            *component_values,
+        )
 
         _unpatch_cross_attn()
         _ACTIVE_STATE = None

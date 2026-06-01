@@ -1118,10 +1118,17 @@ def _template_choices():
     return sorted(_template_data().keys())
 
 
+def _resolve_template_name(value=None, choices=None):
+    choices = choices if choices is not None else _template_choices()
+    value = str(value or "").strip()
+    if value in choices:
+        return value
+    return choices[0] if choices else None
+
+
 def _template_dropdown_update(value=None):
     choices = _template_choices()
-    if value not in choices:
-        value = choices[0] if choices else None
+    value = _resolve_template_name(value, choices)
     return gr.update(choices=choices, value=value)
 
 
@@ -1444,7 +1451,7 @@ def _default_state_updates(lang=None, status_text=None):
     hires_updates = _component_values_from_rows(state["hires_rows"], 3.0, state["optimization"], state["hires_count"])
     return (
         gr.update(value=state["enable"], interactive=True),
-        gr.update(value=state["template_name"]),
+        _template_dropdown_update(state["template_name"]),
         gr.update(value=state["template_target"]),
         gr.update(value=state["base_count"], interactive=True),
         gr.update(value=state["hires_count"], interactive=True),
@@ -1491,7 +1498,8 @@ def _apply_template_updates(name, target, base_row_count, hires_row_count, curre
         *[gr.update() for _ in range(MAX_ARTIST_ROWS * 20)],
     )
     data = _template_data()
-    tpl = data.get(str(name or "").strip())
+    name = _resolve_template_name(name, sorted(data.keys()))
+    tpl = data.get(name)
     if not isinstance(tpl, dict):
         return no_selection
     optimization_key = _option_key("optimization", tpl.get("optimization"), OPT_BALANCE)
@@ -2239,7 +2247,8 @@ class Script(scripts.Script):
 
             with gr.Tab(_t("template")):
                 with gr.Row():
-                    template_dropdown = gr.Dropdown(label=_t("template"), choices=_template_choices(), value=defaults["template_name"], allow_custom_value=False, elem_id=self.elem_id("template_dropdown"))
+                    template_choices = _template_choices()
+                    template_dropdown = gr.Dropdown(label=_t("template"), choices=template_choices, value=_resolve_template_name(defaults["template_name"], template_choices), allow_custom_value=False, elem_id=self.elem_id("template_dropdown"))
                     template_apply_target = gr.Dropdown(label=_t("apply_target"), choices=_option_choices("apply_target", lang), value=defaults["template_target"], elem_id=self.elem_id("template_apply_target"))
                     template_apply = gr.Button(_t("apply_template"), variant="primary", elem_id=self.elem_id("template_apply"))
                 with gr.Row():

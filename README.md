@@ -18,7 +18,7 @@ Special thanks to **An1X3R/Anima-Artist-Mixer** and **汐浮尘/utowo** for the 
 - Templates store stable internal values and can be applied across English/Chinese UI modes.
 - Localized option labels for optimization presets, combine mode, fusion mode, curve, stage, and template target.
 - Performance, Balance, and Quality optimization presets. Balance is the default.
-- English/Chinese UI setting, plus a description switch at the top of the panel.
+- English/Chinese UI setting at the top of the panel; switching it refreshes only this plugin panel.
 - Text-encoding cache for repeated prompts and artist rows.
 - Reference-style `Output average + Interpolate` by default, with `Quality-safe delta` still available for a steadier, more conservative blend.
 

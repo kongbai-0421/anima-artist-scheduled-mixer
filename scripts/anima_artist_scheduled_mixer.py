@@ -165,7 +165,7 @@ LANG = {
         "accordion": "Anima 画师串调度混合",
         "settings_label": "Anima 画师串调度混合界面语言",
         "intro_language": "界面语言",
-        "language_saved": "界面语言已保存。说明已立即切换；完整控件文字将在 Reload UI 或下次启动后生效。",
+        "language_saved": "界面语言已保存，插件面板已切换。",
         "language_save_failed": "界面语言保存失败，请检查控制台日志。",
         "enable": "启用画师串混合",
         "base_tab": "底图",
@@ -214,7 +214,7 @@ LANG = {
         "accordion": "Anima Artist Scheduled Mixer",
         "settings_label": "Anima Artist Scheduled Mixer UI language",
         "intro_language": "UI language",
-        "language_saved": "UI language saved. The guide switched immediately; all control labels update after Reload UI or the next startup.",
+        "language_saved": "UI language saved. The plugin panel has been updated.",
         "language_save_failed": "Failed to save UI language. Check the console log.",
         "enable": "Enable artist mixing",
         "base_tab": "Base",
@@ -366,6 +366,15 @@ def _intro_default(language=None):
     return _intro_text(language or _language())
 
 
+def _html_attr(value):
+    return str(value).replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _status_html(message, refresh_language=None):
+    refresh_attr = f' data-anima-artist-language-refresh="{_html_attr(refresh_language)}"' if refresh_language else ""
+    return f"<span{refresh_attr}>{_html_attr(message)}</span>"
+
+
 def _save_ui_language(language):
     language_code = _choice_to_language(language)
     try:
@@ -374,10 +383,10 @@ def _save_ui_language(language):
         else:
             shared.opts.data[LANGUAGE_OPTION] = language_code
         shared.opts.save(shared.config_filename)
-        return _intro_text(language_code), LANG[language_code]["language_saved"]
+        return _intro_text(language_code), _status_html(LANG[language_code]["language_saved"], refresh_language=language_code)
     except Exception:
         logger.exception("Failed to save Anima artist mixer UI language")
-        return _intro_text(language_code), LANG[language_code]["language_save_failed"]
+        return _intro_text(language_code), _status_html(LANG[language_code]["language_save_failed"])
 
 
 def _set_persistent_option(name, value):
@@ -833,7 +842,7 @@ def _register_ui_settings():
                 {"choices": LANGUAGE_CHOICES},
                 section=("anima-artist-scheduled-mixer", "Anima Artist Scheduled Mixer"),
                 category_id="system",
-            ).needs_reload_ui(),
+            ),
         )
     if LAST_TEMPLATE_OPTION not in shared.opts.data_labels:
         shared.opts.add_option(
@@ -2209,8 +2218,7 @@ class Script(scripts.Script):
                     elem_id=self.elem_id("intro_language"),
                 )
             intro = gr.Markdown(value=_intro_default(lang), elem_id=self.elem_id("intro"))
-            intro_status = gr.Markdown(value="", elem_id=self.elem_id("intro_status"))
-            intro_language.change(fn=_save_ui_language, inputs=[intro_language], outputs=[intro, intro_status], queue=False, show_progress=False, **_internal_event_kwargs())
+            intro_status = gr.HTML(value="", elem_id=self.elem_id("intro_status"))
 
             runtime_base_shift = gr.Number(value=3.0, visible=False, elem_id=self.elem_id("runtime_base_shift"))
             runtime_hires_shift = gr.Number(value=3.0, visible=False, elem_id=self.elem_id("runtime_hires_shift"))
@@ -2231,8 +2239,8 @@ class Script(scripts.Script):
                 with gr.Row():
                     base_row_count = gr.Number(label=_t("row_count"), value=defaults["base_count"], precision=0, elem_id=self.elem_id("base_row_count"))
                     base_apply_presets = gr.Button(_t("normalize_rows"), elem_id=self.elem_id("base_apply_presets"))
-                gr.Markdown(value=_t("shift_runtime_hint"))
-                gr.Markdown(value=f"**{_t('artist_table')}**")
+                base_shift_hint = gr.Markdown(value=_t("shift_runtime_hint"))
+                base_artist_table_label = gr.Markdown(value=f"**{_t('artist_table')}**")
                 base_row_components = _create_artist_row_controls("base", lang, defaults["base_rows"], self.elem_id)
 
             with gr.Tab(_t("hires_tab")):
@@ -2241,8 +2249,8 @@ class Script(scripts.Script):
                 with gr.Row():
                     hires_row_count = gr.Number(label=_t("hr_row_count"), value=defaults["hires_count"], precision=0, elem_id=self.elem_id("hires_row_count"))
                     hires_apply_presets = gr.Button(_t("normalize_rows"), elem_id=self.elem_id("hires_apply_presets"))
-                gr.Markdown(value=_t("shift_runtime_hint"))
-                gr.Markdown(value=f"**{_t('artist_table')}**")
+                hires_shift_hint = gr.Markdown(value=_t("shift_runtime_hint"))
+                hires_artist_table_label = gr.Markdown(value=f"**{_t('artist_table')}**")
                 hires_row_components = _create_artist_row_controls("hires", lang, defaults["hires_rows"], self.elem_id)
 
             with gr.Tab(_t("template")):
@@ -2263,7 +2271,124 @@ class Script(scripts.Script):
                 template_status = gr.Markdown(value="", elem_id=self.elem_id("template_status"))
 
             with gr.Tab(_t("help")):
-                gr.Markdown(value=HELP_ZH if _language() == "zh" else HELP_EN)
+                help_text = gr.Markdown(value=HELP_ZH if _language() == "zh" else HELP_EN)
+
+        def refresh_language(
+            language,
+            optimization_value,
+            combine_value,
+            fusion_value,
+            template_target_value,
+            *row_values,
+        ):
+            intro_update, status_update = _save_ui_language(language)
+            language_code = _choice_to_language(language)
+            labels = LANG[language_code]
+            row_labels = _row_component_headers(language_code)
+            bool_choices = [_bool_label(True, language_code), _bool_label(False, language_code)]
+            curve_choices = _option_choices("curve", language_code)
+            stage_choices = _option_choices("stage", language_code)
+            base_values = row_values[: MAX_ARTIST_ROWS * 10]
+            hires_values = row_values[MAX_ARTIST_ROWS * 10 : MAX_ARTIST_ROWS * 20]
+
+            outputs = [
+                intro_update,
+                status_update,
+                gr.update(label=labels["intro_language"]),
+                gr.update(label=labels["enable"]),
+                gr.update(label=labels["optimization"], choices=_option_choices("optimization", language_code), value=_option_label("optimization", optimization_value, language_code)),
+                gr.update(label=labels["global_strength"]),
+                gr.update(label=labels["cache"]),
+                gr.update(label=labels["combine"], choices=_option_choices("combine", language_code), value=_option_label("combine", combine_value, language_code)),
+                gr.update(label=labels["fusion"], choices=_option_choices("fusion", language_code), value=_option_label("fusion", fusion_value, language_code)),
+                gr.update(label=labels["apply_uncond"]),
+                gr.update(label=labels["row_count"]),
+                gr.update(value=labels["normalize_rows"]),
+                gr.update(value=labels["shift_runtime_hint"]),
+                gr.update(value=f"**{labels['artist_table']}**"),
+                gr.update(label=labels["hires_independent"]),
+                gr.update(label=labels["disable_hires_mixing"]),
+                gr.update(label=labels["hr_row_count"]),
+                gr.update(value=labels["normalize_rows"]),
+                gr.update(value=labels["shift_runtime_hint"]),
+                gr.update(value=f"**{labels['artist_table']}**"),
+                gr.update(label=labels["template"]),
+                gr.update(label=labels["apply_target"], choices=_option_choices("apply_target", language_code), value=_option_label("apply_target", template_target_value, language_code)),
+                gr.update(value=labels["apply_template"]),
+                gr.update(label=labels["template_name"]),
+                gr.update(value=labels["save_base_template"]),
+                gr.update(value=labels["save_hires_template"]),
+                gr.update(label=labels["rename_to"]),
+                gr.update(value=labels["rename_template"]),
+                gr.update(value=labels["delete_template"]),
+                gr.update(value=labels["reset_defaults"]),
+                gr.update(value=HELP_EN if language_code == "en" else HELP_ZH),
+            ]
+
+            for values in (base_values, hires_values):
+                for offset in range(0, MAX_ARTIST_ROWS * 10, 10):
+                    enabled_value = values[offset] if offset < len(values) else True
+                    curve_value = values[offset + 7] if offset + 7 < len(values) else CURVE_SMOOTH
+                    stage_value = values[offset + 8] if offset + 8 < len(values) else PRESET_CUSTOM
+                    auto_value = values[offset + 9] if offset + 9 < len(values) else True
+                    outputs.extend(
+                        [
+                            gr.update(label=row_labels["enabled"], choices=bool_choices, value=_bool_label(enabled_value, language_code)),
+                            gr.update(label=row_labels["artist"]),
+                            gr.update(label=row_labels["weight"]),
+                            gr.update(label=row_labels["blocks"]),
+                            gr.update(label=row_labels["start"]),
+                            gr.update(label=row_labels["end"]),
+                            gr.update(label=row_labels["peak"]),
+                            gr.update(label=row_labels["curve"], choices=curve_choices, value=_option_label("curve", curve_value, language_code)),
+                            gr.update(label=row_labels["stage"], choices=stage_choices, value=_option_label("stage", stage_value, language_code)),
+                            gr.update(label=row_labels["auto_shift"], choices=bool_choices, value=_bool_label(auto_value, language_code)),
+                        ]
+                    )
+            return outputs
+
+        intro_language.change(
+            fn=refresh_language,
+            inputs=[intro_language, optimization, combine_mode, fusion_mode, template_apply_target, *base_row_components, *hires_row_components],
+            outputs=[
+                intro,
+                intro_status,
+                intro_language,
+                enable,
+                optimization,
+                global_strength,
+                enable_cache,
+                combine_mode,
+                fusion_mode,
+                apply_uncond,
+                base_row_count,
+                base_apply_presets,
+                base_shift_hint,
+                base_artist_table_label,
+                hires_independent,
+                disable_hires_mixing,
+                hires_row_count,
+                hires_apply_presets,
+                hires_shift_hint,
+                hires_artist_table_label,
+                template_dropdown,
+                template_apply_target,
+                template_apply,
+                template_name,
+                template_save_base,
+                template_save_hires,
+                rename_to,
+                rename_button,
+                delete_button,
+                reset_defaults_button,
+                help_text,
+                *base_row_components,
+                *hires_row_components,
+            ],
+            queue=False,
+            show_progress=False,
+            **_internal_event_kwargs(),
+        )
 
         base_row_count.change(
             fn=_resize_row_components,

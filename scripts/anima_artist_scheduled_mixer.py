@@ -1,6 +1,5 @@
 import json
 import logging
-import math
 import re
 import uuid
 from collections import OrderedDict
@@ -34,6 +33,44 @@ FUSION_QUALITY_DELTA = "quality_delta"
 BASE_CONTEXT_FUSIONS = {FUSION_CONCAT_WITH_BASE}
 COMBINE_OUTPUT_AVG = "output_avg"
 COMBINE_CONCAT = "concat"
+COMBINE_LOWRANK_AVG = "lowrank_avg"
+
+ANCHOR_SEEDS_POOL = (42, 100, 200, 300)
+ANCHOR_SEEDS_MAX = len(ANCHOR_SEEDS_POOL)
+STATIC_CAPTURE_K_DEFAULT = 6
+STATIC_CAPTURE_K_MAX = 12
+
+ADVANCED_SETTING_KEYS = (
+    "artist_ema_alpha",
+    "lowrank_k",
+    "artist_static_capture",
+    "static_capture_k",
+    "artist_anchor_q",
+    "anchor_seed_list",
+    "anchor_seeds_count",
+    "anchor_user_blend",
+    "anchor_deep_layer_threshold",
+    "stabilizer_end_percent",
+    "style_balance",
+    "structure_preserve",
+    "delta_norm_cap",
+)
+
+ADVANCED_DEFAULTS = {
+    "artist_ema_alpha": 0.0,
+    "lowrank_k": 1,
+    "artist_static_capture": False,
+    "static_capture_k": STATIC_CAPTURE_K_DEFAULT,
+    "artist_anchor_q": False,
+    "anchor_seed_list": "",
+    "anchor_seeds_count": 1,
+    "anchor_user_blend": 0.0,
+    "anchor_deep_layer_threshold": -1,
+    "stabilizer_end_percent": 1.0,
+    "style_balance": 0.0,
+    "structure_preserve": 0.0,
+    "delta_norm_cap": 0.0,
+}
 
 CURVE_SMOOTH = "Smooth"
 CURVE_HOLD = "Hold"
@@ -98,6 +135,7 @@ OPTION_LABELS = {
         [
             (COMBINE_OUTPUT_AVG, {"en": "Output average", "zh": "输出平均", "aliases": ("output average", "输出平均值")}),
             (COMBINE_CONCAT, {"en": "Token concatenation", "zh": "token拼接", "aliases": ("Token concat", "concat", "拼接", "令牌拼接")}),
+            (COMBINE_LOWRANK_AVG, {"en": "Low-rank average", "zh": "低秩平均", "aliases": ("lowrank", "low-rank", "低秩约束")}),
         ]
     ),
     "fusion": OrderedDict(
@@ -184,6 +222,21 @@ LANG = {
         "fusion": "融合模式",
         "apply_uncond": "同时作用于负条件",
         "cache": "启用文本编码缓存",
+        "advanced_tab": "高级稳定",
+        "advanced_hint": "高级稳定器默认关闭；同时启用过多功能会增加显存和计算开销。",
+        "artist_ema_alpha": "EMA 平滑强度",
+        "lowrank_k": "低秩约束阶数",
+        "artist_static_capture": "启用 Static Capture",
+        "static_capture_k": "Static Capture 预热步数",
+        "artist_anchor_q": "启用 Anchor Q",
+        "anchor_seed_list": "Anchor 固定种子（逗号分隔）",
+        "anchor_seeds_count": "内置 Anchor 种子数量",
+        "anchor_user_blend": "Anchor 与当前 Q 混合比例",
+        "anchor_deep_layer_threshold": "Anchor 深层截止（-1 为全部层）",
+        "stabilizer_end_percent": "稳定器结束进度",
+        "style_balance": "Style Balance 强度",
+        "structure_preserve": "Structure Guard 结构保持",
+        "delta_norm_cap": "Structure Guard 增量上限",
         "template": "模板",
         "template_name": "模板名称",
         "save_base_template": "保存底图画师串设置",
@@ -233,6 +286,21 @@ LANG = {
         "fusion": "Fusion mode",
         "apply_uncond": "Apply to unconditional rows",
         "cache": "Enable text-encoding cache",
+        "advanced_tab": "Advanced stability",
+        "advanced_hint": "Advanced stabilizers are disabled by default. Combining several of them increases VRAM and compute cost.",
+        "artist_ema_alpha": "EMA smoothing strength",
+        "lowrank_k": "Low-rank constraint rank",
+        "artist_static_capture": "Enable Static Capture",
+        "static_capture_k": "Static Capture warmup steps",
+        "artist_anchor_q": "Enable Anchor Q",
+        "anchor_seed_list": "Fixed anchor seeds (comma separated)",
+        "anchor_seeds_count": "Built-in anchor seed count",
+        "anchor_user_blend": "Anchor/current Q blend",
+        "anchor_deep_layer_threshold": "Anchor deep-layer cutoff (-1 = all)",
+        "stabilizer_end_percent": "Stabilizer end progress",
+        "style_balance": "Style Balance strength",
+        "structure_preserve": "Structure Guard preservation",
+        "delta_norm_cap": "Structure Guard delta cap",
         "template": "Template",
         "template_name": "Template name",
         "save_base_template": "Save base artist-chain settings",
@@ -299,11 +367,15 @@ Performance limits the default block range and caps the active artist count lowe
 
 **Combine Mode**
 
-Output average runs each artist branch separately, then averages the artist outputs by weight. This is the most predictable mode and matches the recommended reference path. Token concatenation joins the artist contexts first and sends them through attention together; it is useful for compact mixes, but the artists can interact more strongly.
+Output average runs each artist branch separately, then averages the artist outputs by weight. Low-rank average constrains the artist deltas to a rank-K subspace for better cross-seed consistency. Token concatenation joins the artist contexts first and sends them through attention together; it is useful for compact mixes, but the artists can interact more strongly.
 
 **Fusion Mode**
 
 Interpolate blends between the base prompt output and the artist branch output. It is the strongest and most reference-compatible default. Concat with base lets attention see base tokens and artist tokens together before blending. Quality-safe delta keeps the base output and adds a norm-limited artist difference, which is steadier but can look much weaker.
+
+**Advanced Stability**
+
+EMA smooths artist outputs across sampling steps. Static Capture averages the first K distinct steps and freezes the result. Anchor Q performs a fixed-seed pre-pass and uses its hidden states for artist attention queries. Style Balance equalizes artist-delta volume before row weights are applied. Structure Guard projects and caps the final artist delta to protect composition. `Stabilizer end progress` limits EMA, Static Capture, and Anchor Q to the early portion of sampling.
 
 The UI localizes option labels. Templates are saved with stable internal values, so English/Chinese/raw values can be applied across language modes.
 """
@@ -329,11 +401,15 @@ HELP_ZH = """
 
 **组合模式**
 
-输出平均会让每个画师分支分别跑 attention，再按权重平均输出，是最稳定、也最接近参考推荐的方式。token拼接会先把多个画师上下文拼在一起再送入 attention，适合更紧凑的混合，但画师之间会更容易互相影响。
+输出平均会让每个画师分支分别跑 attention，再按权重平均输出，是最稳定、也最接近参考推荐的方式。低秩平均会把多个画师的增量约束到 K 阶子空间，用于提高跨 seed 一致性。token拼接会先把多个画师上下文拼在一起再送入 attention，适合更紧凑的混合，但画师之间会更容易互相影响。
 
 **融合模式**
 
 插值融合会在主提示词输出和画师分支输出之间做插值，是最强、也最接近参考插件默认效果的方式。拼接底图条件会先让 attention 同时看到底图 token 和画师 token，再进行混合。保真增量会保留底图输出，只加入有范数限制的画师差值，更稳但也可能明显偏弱。
+
+**高级稳定**
+
+EMA 会跨采样步平滑画师输出；Static Capture 会平均前 K 个不同采样步并冻结结果；Anchor Q 会用固定种子预跑并将捕获的隐藏状态用于画师 attention 查询；Style Balance 会在应用画师权重前平衡各画师增量幅度；Structure Guard 会投影并限制最终画师增量以保护构图。“稳定器结束进度”用于限制 EMA、Static Capture 和 Anchor Q 只作用于采样前段。
 
 面板会按语言汉化选项。模板保存稳定内部值，因此中文、英文或旧 raw 值模板都可以跨语言应用。
 """
@@ -909,6 +985,61 @@ def _to_bool(value, fallback=False):
     return fallback
 
 
+def _parse_anchor_seed_list(value):
+    seeds = []
+    seen = set()
+    for part in re.split(r"[\s,，;]+", str(value or "")):
+        if not part:
+            continue
+        try:
+            seed = int(part)
+        except (TypeError, ValueError):
+            continue
+        if seed < 0:
+            continue
+        seed %= 2 ** 63
+        if seed in seen:
+            continue
+        seen.add(seed)
+        seeds.append(seed)
+        if len(seeds) >= ANCHOR_SEEDS_MAX:
+            break
+    return seeds
+
+
+def _normalize_advanced_settings(data=None):
+    source = data.get("advanced", data) if isinstance(data, dict) else {}
+    return {
+        "artist_ema_alpha": _clamp(_to_float(source.get("artist_ema_alpha"), 0.0), 0.0, 0.95),
+        "lowrank_k": max(1, min(MAX_ARTIST_ROWS, int(_to_float(source.get("lowrank_k"), 1)))),
+        "artist_static_capture": _to_bool(source.get("artist_static_capture"), False),
+        "static_capture_k": max(1, min(STATIC_CAPTURE_K_MAX, int(_to_float(source.get("static_capture_k"), STATIC_CAPTURE_K_DEFAULT)))),
+        "artist_anchor_q": _to_bool(source.get("artist_anchor_q"), False),
+        "anchor_seed_list": str(source.get("anchor_seed_list") or "").strip(),
+        "anchor_seeds_count": max(1, min(ANCHOR_SEEDS_MAX, int(_to_float(source.get("anchor_seeds_count"), 1)))),
+        "anchor_user_blend": _clamp(_to_float(source.get("anchor_user_blend"), 0.0), 0.0, 1.0),
+        "anchor_deep_layer_threshold": max(-1, min(64, int(_to_float(source.get("anchor_deep_layer_threshold"), -1)))),
+        "stabilizer_end_percent": _clamp(_to_float(source.get("stabilizer_end_percent"), 1.0), 0.0, 1.0),
+        "style_balance": _clamp(_to_float(source.get("style_balance"), 0.0), 0.0, 1.0),
+        "structure_preserve": _clamp(_to_float(source.get("structure_preserve"), 0.0), 0.0, 1.0),
+        "delta_norm_cap": _clamp(_to_float(source.get("delta_norm_cap"), 0.0), 0.0, 4.0),
+    }
+
+
+def _advanced_settings_from_values(values):
+    raw = dict(zip(ADVANCED_SETTING_KEYS, list(values)[: len(ADVANCED_SETTING_KEYS)]))
+    return _normalize_advanced_settings(raw)
+
+
+def _advanced_values(settings=None):
+    normalized = _normalize_advanced_settings(settings)
+    return [normalized[key] for key in ADVANCED_SETTING_KEYS]
+
+
+def _advanced_updates(settings=None):
+    return [gr.update(value=value, interactive=True) for value in _advanced_values(settings)]
+
+
 def _format_float(value):
     text = f"{_to_float(value):.6f}".rstrip("0").rstrip(".")
     return text if text not in {"", "-0"} else "0"
@@ -1154,6 +1285,7 @@ def _save_template_record(
     fusion_mode,
     apply_uncond,
     enable_cache,
+    advanced_settings,
     status_key,
 ):
     name = str(name or "").strip()
@@ -1175,12 +1307,15 @@ def _save_template_record(
         "fusion_mode": fusion_key,
         "apply_uncond": bool(apply_uncond),
         "enable_cache": bool(enable_cache),
+        "advanced": _normalize_advanced_settings(advanced_settings),
     }
     _save_template_data(data)
     return _template_dropdown_update(name), _t(status_key).format(name=name)
 
 
 def _save_base_template_ui(name, base_row_count, base_shift, disable_hires_mixing, global_strength, optimization, combine_mode, fusion_mode, apply_uncond, enable_cache, *base_values):
+    advanced_settings = _advanced_settings_from_values(base_values)
+    base_values = base_values[len(ADVANCED_SETTING_KEYS) :]
     base_rows = _rows_from_components(*base_values)
     return _save_template_record(
         name,
@@ -1195,6 +1330,7 @@ def _save_base_template_ui(name, base_row_count, base_shift, disable_hires_mixin
         fusion_mode,
         apply_uncond,
         enable_cache,
+        advanced_settings,
         "saved_base_template",
     )
 
@@ -1202,6 +1338,8 @@ def _save_base_template_ui(name, base_row_count, base_shift, disable_hires_mixin
 def _save_hires_template_ui(name, hires_independent, hires_row_count, hires_shift, disable_hires_mixing, global_strength, optimization, combine_mode, fusion_mode, apply_uncond, enable_cache, *hires_values):
     if not _to_bool(hires_independent, False):
         return _template_dropdown_update(), _t("hires_template_disabled")
+    advanced_settings = _advanced_settings_from_values(hires_values)
+    hires_values = hires_values[len(ADVANCED_SETTING_KEYS) :]
     hires_rows = _rows_from_components(*hires_values)
     return _save_template_record(
         name,
@@ -1216,6 +1354,7 @@ def _save_hires_template_ui(name, hires_independent, hires_row_count, hires_shif
         fusion_mode,
         apply_uncond,
         enable_cache,
+        advanced_settings,
         "saved_hires_template",
     )
 
@@ -1258,6 +1397,7 @@ def _builtin_default_ui_state(lang):
     disable_hires_mixing = False
     apply_uncond = False
     enable_cache = True
+    advanced = _normalize_advanced_settings()
     template_name = None
 
     base_rows = _normalize_rows(_default_rows(base_count, base_shift, optimization_key), base_count, base_shift, optimization_key)
@@ -1279,6 +1419,7 @@ def _builtin_default_ui_state(lang):
         "fusion": _option_label("fusion", fusion_key, lang),
         "apply_uncond": apply_uncond,
         "enable_cache": enable_cache,
+        "advanced": advanced,
     }
 
 
@@ -1343,6 +1484,7 @@ def _state_from_current_settings(data, lang):
         "fusion": _option_label("fusion", fusion_key, lang),
         "apply_uncond": bool(data.get("apply_uncond", False)),
         "enable_cache": bool(data.get("enable_cache", True)),
+        "advanced": _normalize_advanced_settings(data),
     }
 
 
@@ -1367,8 +1509,11 @@ def _current_settings_payload(
     fusion_mode,
     apply_uncond,
     enable_cache,
-    *component_values,
+    *values,
 ):
+    advanced_values = values[: len(ADVANCED_SETTING_KEYS)]
+    component_values = values[len(ADVANCED_SETTING_KEYS) :]
+    advanced_settings = _advanced_settings_from_values(advanced_values)
     optimization_key = _option_key("optimization", optimization, OPT_BALANCE)
     base_values = component_values[: MAX_ARTIST_ROWS * 10]
     hires_values = component_values[MAX_ARTIST_ROWS * 10 : MAX_ARTIST_ROWS * 20]
@@ -1377,7 +1522,7 @@ def _current_settings_payload(
     base_count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(base_row_count, DEFAULT_ARTIST_ROWS))))
     hires_count = max(1, min(MAX_ARTIST_ROWS, int(_to_float(hires_row_count, DEFAULT_ARTIST_ROWS))))
     return {
-        "version": 1,
+        "version": 2,
         "enable": bool(enable),
         "template_name": str(template_name or "").strip(),
         "template_target": _option_key("apply_target", template_target, APPLY_BASE),
@@ -1395,6 +1540,7 @@ def _current_settings_payload(
         "fusion_mode": _option_key("fusion", fusion_mode, FUSION_INTERPOLATE),
         "apply_uncond": bool(apply_uncond),
         "enable_cache": bool(enable_cache),
+        "advanced": advanced_settings,
     }
 
 
@@ -1417,7 +1563,7 @@ def _save_runtime_current_settings(
     fusion_mode,
     apply_uncond,
     enable_cache,
-    *component_values,
+    *values,
 ):
     try:
         _save_current_settings_data(
@@ -1437,7 +1583,7 @@ def _save_runtime_current_settings(
                 fusion_mode,
                 apply_uncond,
                 enable_cache,
-                *component_values,
+                *values,
             )
         )
     except Exception:
@@ -1474,6 +1620,7 @@ def _default_state_updates(lang=None, status_text=None):
         gr.update(value=state["fusion"], interactive=True),
         gr.update(value=state["apply_uncond"], interactive=True),
         gr.update(value=state["enable_cache"], interactive=True),
+        *_advanced_updates(state["advanced"]),
         _t("defaults_restored") if status_text is None else status_text,
         *base_updates,
         *hires_updates,
@@ -1486,8 +1633,9 @@ def _reset_all_defaults_ui():
 
 
 def _apply_template_updates(name, target, base_row_count, hires_row_count, current_base_shift, current_hires_shift, current_optimization, component_values, remember=False, status_text=None):
-    base_values = component_values[: MAX_ARTIST_ROWS * 10]
-    hires_values = component_values[MAX_ARTIST_ROWS * 10 : MAX_ARTIST_ROWS * 20]
+    row_values = component_values[len(ADVANCED_SETTING_KEYS) :]
+    base_values = row_values[: MAX_ARTIST_ROWS * 10]
+    hires_values = row_values[MAX_ARTIST_ROWS * 10 : MAX_ARTIST_ROWS * 20]
     base_current = _rows_from_components(*base_values)
     hires_current = _rows_from_components(*hires_values)
     no_selection = (
@@ -1503,6 +1651,7 @@ def _apply_template_updates(name, target, base_row_count, hires_row_count, curre
         gr.update(),
         gr.update(),
         gr.update(),
+        *[gr.update() for _ in ADVANCED_SETTING_KEYS],
         _t("no_template_selected"),
         *[gr.update() for _ in range(MAX_ARTIST_ROWS * 20)],
     )
@@ -1553,6 +1702,7 @@ def _apply_template_updates(name, target, base_row_count, hires_row_count, curre
         gr.update(value=_option_label("fusion", tpl.get("fusion_mode", FUSION_INTERPOLATE)), interactive=True),
         gr.update(value=tpl.get("apply_uncond", False), interactive=True),
         gr.update(value=tpl.get("enable_cache", True), interactive=True),
+        *_advanced_updates(tpl),
         status_text if status_text is not None else _t("applied_template").format(name=name, target=_option_label("apply_target", target)),
         *base_updates,
         *hires_updates,
@@ -1587,6 +1737,7 @@ def _blank_template_updates(status_text=""):
         gr.update(),
         gr.update(),
         gr.update(),
+        *[gr.update() for _ in ADVANCED_SETTING_KEYS],
         status_text,
         *[gr.update() for _ in range(MAX_ARTIST_ROWS * 20)],
     )
@@ -1705,6 +1856,20 @@ class MixerState:
     fusion_mode: str
     apply_uncond: bool
     batched: bool
+    artist_ema_alpha: float = 0.0
+    lowrank_k: int = 1
+    artist_static_capture: bool = False
+    static_capture_k: int = STATIC_CAPTURE_K_DEFAULT
+    artist_anchor_q: bool = False
+    anchor_seed_list: list[int] = field(default_factory=list)
+    anchor_seeds_count: int = 1
+    anchor_user_blend: float = 0.0
+    anchor_deep_layer_threshold: int = -1
+    stabilizer_end_percent: float = 1.0
+    style_balance: float = 0.0
+    structure_preserve: float = 0.0
+    delta_norm_cap: float = 0.0
+    dm_ref: object | None = None
     artists: list[ArtistRuntime] = field(default_factory=list)
     progress_warning: bool = False
     batched_disabled: bool = False
@@ -1716,6 +1881,20 @@ class MixerState:
     diff_probe: tuple[float, float] | None = None
     mask_probe: tuple[int, int] | None = None
     superseded: bool = False
+    current_progress: float | None = None
+    current_sigma: float | None = None
+    current_layer: int = -1
+    ema_cache: dict = field(default_factory=dict)
+    static_cache: dict = field(default_factory=dict)
+    anchor_cache: dict = field(default_factory=dict)
+    anchor_capture: dict = field(default_factory=dict)
+    anchor_cache_key: tuple | None = None
+    anchor_failed: bool = False
+    in_anchor_run: bool = False
+    warned_static_no_progress: bool = False
+    warned_ema_no_progress: bool = False
+    warned_lowrank: bool = False
+    warned_anchor_ok: bool = False
 
     def target_blocks(self):
         blocks = set()
@@ -1819,6 +1998,88 @@ def _summarize_blocks(blocks):
     return ",".join(ranges)
 
 
+def _condition_row_index(row_count, cond_or_uncond, condition_index):
+    if cond_or_uncond and row_count % len(cond_or_uncond) == 0:
+        return condition_index * (row_count // len(cond_or_uncond))
+    return condition_index if condition_index < row_count else 0
+
+
+def _run_anchor_q(state, apply_model, args):
+    c_dict = dict(args.get("c", {}) or {})
+    base_context = c_dict.get("c_crossattn")
+    user_x = args.get("input")
+    timestep = args.get("timestep")
+    if not torch.is_tensor(base_context) or user_x is None or timestep is None:
+        return
+
+    transformer_options = dict(c_dict.get("transformer_options", {}) or {})
+    cond_or_uncond = args.get("cond_or_uncond") or transformer_options.get("cond_or_uncond")
+    cond_index = 0
+    if cond_or_uncond is not None:
+        markers = list(cond_or_uncond)
+        if 0 not in markers:
+            return
+        cond_index = markers.index(0)
+    if base_context.shape[0] > 1:
+        row = _condition_row_index(base_context.shape[0], cond_or_uncond, cond_index)
+        base_context = base_context[row : row + 1]
+    batch_size = user_x.shape[0]
+    if base_context.shape[0] != batch_size:
+        base_context = base_context[:1].expand(batch_size, *base_context.shape[1:])
+    base_context = base_context.contiguous().to(device=user_x.device, dtype=user_x.dtype)
+
+    seeds = state.anchor_seed_list[:ANCHOR_SEEDS_MAX]
+    if not seeds:
+        seeds = list(ANCHOR_SEEDS_POOL[: state.anchor_seeds_count])
+    try:
+        sigma_key = round(float(timestep.flatten()[0].item()), 4)
+    except Exception:
+        sigma_key = None
+    cache_key = (tuple(user_x.shape), _tensor_fingerprint(base_context), sigma_key, tuple(seeds))
+    if state.anchor_cache_key == cache_key and state.anchor_cache:
+        return
+
+    safe_options = dict(transformer_options)
+    for key in ("cond_or_uncond", "cond_mark", "cond_indices", "uncond_indices", "patches"):
+        safe_options.pop(key, None)
+    anchor_kwargs = dict(c_dict)
+    anchor_kwargs["c_crossattn"] = base_context
+    anchor_kwargs["transformer_options"] = safe_options
+    accumulator = {}
+    state.in_anchor_run = True
+    try:
+        with torch.no_grad():
+            for seed in seeds:
+                generator = torch.Generator(device=user_x.device)
+                generator.manual_seed(seed)
+                anchor_x = torch.randn(user_x.shape, generator=generator, device=user_x.device, dtype=user_x.dtype)
+                state.anchor_capture = {}
+                apply_model(anchor_x, timestep, **anchor_kwargs)
+                for layer_idx, hidden in state.anchor_capture.items():
+                    value = hidden.to(torch.float32)
+                    accumulator[layer_idx] = value if layer_idx not in accumulator else accumulator[layer_idx] + value
+        inv = 1.0 / max(1, len(seeds))
+        state.anchor_cache = {layer_idx: (value * inv).to(user_x.dtype).detach() for layer_idx, value in accumulator.items()}
+    except Exception as exc:
+        if _should_reraise(exc):
+            raise
+        logger.warning("Anima artist mixer Anchor Q pre-run failed and was disabled: %s", exc)
+        state.anchor_cache = {}
+        state.anchor_failed = True
+    finally:
+        state.anchor_capture = {}
+        state.in_anchor_run = False
+
+    if state.anchor_cache:
+        state.anchor_cache_key = cache_key
+        if not state.warned_anchor_ok:
+            logger.info("Anima artist mixer Anchor Q captured %d cross-attn layers.", len(state.anchor_cache))
+            state.warned_anchor_ok = True
+    elif not state.anchor_failed:
+        state.anchor_failed = True
+        logger.warning("Anima artist mixer Anchor Q captured no layers and was disabled for this run.")
+
+
 def _install_model_wrapper(unet, dm, state):
     global _PATCHED_MODEL_WRAPPERS
     options = getattr(unet, "model_options", None)
@@ -1833,6 +2094,17 @@ def _install_model_wrapper(unet, dm, state):
         state.wrapper_checks += 1
         if not _PATCHED_MODULES:
             _install_cross_attn_patch_no_unpatch(dm, state)
+        c_dict = args.get("c", {}) or {}
+        transformer_options = c_dict.get("transformer_options", {}) or {}
+        progress = _current_progress(transformer_options, state)
+        timestep = args.get("timestep")
+        if timestep is not None:
+            try:
+                state.current_sigma = float(timestep.flatten()[0].item())
+            except Exception:
+                pass
+        if state.artist_anchor_q and not state.anchor_failed and not state.anchor_cache and _stabilizer_active(state, progress):
+            _run_anchor_q(state, apply_model, args)
         if existing is not None:
             return existing(apply_model, args)
         return apply_model(args.get("input"), args.get("timestep"), **args.get("c", {}))
@@ -1886,6 +2158,67 @@ def _broadcast_batch(tensor, batch_size):
     return tensor[:1].expand(batch_size, -1, -1)
 
 
+def _should_reraise(error):
+    if isinstance(error, MemoryError):
+        return True
+    for owner in (torch, getattr(torch, "cuda", None)):
+        error_type = getattr(owner, "OutOfMemoryError", None) if owner is not None else None
+        if error_type is not None and isinstance(error, error_type):
+            return True
+    return False
+
+
+def _tensor_fingerprint(tensor):
+    if tensor is None or not torch.is_tensor(tensor):
+        return None
+    try:
+        flat = tensor.detach().reshape(-1)
+        step = max(1, flat.numel() // 1024)
+        digest = flat[::step].to(torch.float32).sum().item()
+        return tuple(tensor.shape), str(tensor.dtype), round(digest, 3)
+    except Exception:
+        return tuple(tensor.shape), str(tensor.dtype), None
+
+
+def _active_signature(active):
+    return tuple((artist.name, round(float(weight), 6)) for artist, weight in active)
+
+
+def _stabilizer_active(state, progress):
+    if progress is None:
+        return False
+    return progress <= state.stabilizer_end_percent + 1e-6
+
+
+def _project_perpendicular(delta, base):
+    delta_f32 = delta.to(torch.float32)
+    base_f32 = base.to(torch.float32)
+    base_norm_sq = (base_f32 * base_f32).sum(dim=-1, keepdim=True).clamp(min=1e-8)
+    projection = (delta_f32 * base_f32).sum(dim=-1, keepdim=True) / base_norm_sq
+    return (delta_f32 - projection * base_f32).to(delta.dtype)
+
+
+def _limit_delta_norm(delta, base, cap_ratio):
+    cap_ratio = float(cap_ratio)
+    if cap_ratio <= 0.0:
+        return delta
+    base_norm = torch.linalg.vector_norm(base.to(torch.float32), dim=-1, keepdim=True)
+    delta_norm = torch.linalg.vector_norm(delta.to(torch.float32), dim=-1, keepdim=True)
+    limit = (base_norm * cap_ratio).clamp(min=1e-8)
+    scale = (limit / delta_norm.clamp(min=1e-8)).clamp(max=1.0).to(delta.dtype)
+    return delta * scale
+
+
+def _lowrank_rows(rows, rank):
+    if rank >= rows.shape[0]:
+        return rows
+    gram = rows @ rows.transpose(0, 1)
+    eigenvalues, eigenvectors = torch.linalg.eigh(gram)
+    indices = torch.argsort(eigenvalues, descending=True)[:rank]
+    basis = eigenvectors[:, indices]
+    return basis @ (basis.transpose(0, 1) @ rows)
+
+
 def _resolve_row_mask(cond_or_uncond, batch_size, apply_uncond):
     if not cond_or_uncond:
         return [True] * batch_size
@@ -1914,7 +2247,10 @@ def _current_progress(transformer_options, state):
         if sigmas.numel() <= 1:
             return None
         idx = int(torch.argmin(torch.abs(sigmas - cur_value)).item())
-        return _clamp(idx / max(1, sigmas.numel() - 1), 0.0, 1.0)
+        progress = _clamp(idx / max(1, sigmas.numel() - 1), 0.0, 1.0)
+        state.current_progress = progress
+        state.current_sigma = cur_value
+        return progress
     except Exception:
         if not state.progress_warning:
             logger.warning("Anima artist mixer could not resolve sampling progress; time windows will act as full strength.")
@@ -1965,15 +2301,12 @@ def _concat_contexts(base_context, artist_context):
     return torch.cat([base_context, artist_context], dim=_context_token_dim(base_context))
 
 
-def _artist_forward_batched(original_forward, x, context, rope_emb, transformer_options, artists, weights, fusion_mode):
+def _artist_outputs_batched(original_forward, x, context, rope_emb, transformer_options, artists, fusion_mode):
     batch_size = context.shape[0]
     contexts = []
     for artist, _ in artists:
         artist_context = _to_context_like(artist.cond, context)
-        if fusion_mode in BASE_CONTEXT_FUSIONS:
-            contexts.append(_concat_contexts(context, artist_context))
-        else:
-            contexts.append(artist_context)
+        contexts.append(_concat_contexts(context, artist_context) if fusion_mode in BASE_CONTEXT_FUSIONS else artist_context)
     lengths = {item.shape[_context_token_dim(item)] for item in contexts}
     if len(lengths) > 1:
         raise RuntimeError(f"Cannot batch artist contexts with different token lengths: {lengths}")
@@ -1983,14 +2316,171 @@ def _artist_forward_batched(original_forward, x, context, rope_emb, transformer_
     rope_rep = rope_emb
     if torch.is_tensor(rope_emb) and rope_emb.dim() > 0 and rope_emb.shape[0] == batch_size:
         rope_rep = rope_emb.repeat(count, *([1] * (rope_emb.dim() - 1)))
-    opts = dict(transformer_options) if isinstance(transformer_options, dict) else {}
-    cou = opts.get("cond_or_uncond")
-    if cou is not None:
-        opts["cond_or_uncond"] = list(cou) * count
-    out = original_forward(x_rep, context=context_rep, rope_emb=rope_rep, transformer_options=opts)
-    out = out.view(count, batch_size, *out.shape[1:])
-    w = torch.tensor(weights, device=out.device, dtype=out.dtype).view(count, *([1] * (out.dim() - 1)))
-    return (out * w).sum(dim=0)
+    options = dict(transformer_options) if isinstance(transformer_options, dict) else {}
+    cond_or_uncond = options.get("cond_or_uncond")
+    if cond_or_uncond is not None:
+        options["cond_or_uncond"] = list(cond_or_uncond) * count
+    output = original_forward(x_rep, context=context_rep, rope_emb=rope_rep, transformer_options=options)
+    output = output.view(count, batch_size, *output.shape[1:])
+    return [output[index] for index in range(count)]
+
+
+def _anchor_query_x(state, layer_idx, x, progress):
+    if not state.artist_anchor_q or state.anchor_failed or not _stabilizer_active(state, progress):
+        return x
+    if state.anchor_deep_layer_threshold >= 0 and layer_idx >= state.anchor_deep_layer_threshold:
+        return x
+    anchor = state.anchor_cache.get(layer_idx)
+    if anchor is None or anchor.shape[1:] != x.shape[1:]:
+        return x
+    if anchor.shape[0] != x.shape[0]:
+        if x.shape[0] % anchor.shape[0] == 0:
+            anchor = anchor.repeat(x.shape[0] // anchor.shape[0], *([1] * (anchor.dim() - 1)))
+        elif anchor.shape[0] % x.shape[0] == 0:
+            anchor = anchor[: x.shape[0]]
+        else:
+            return x
+    anchor = anchor.to(device=x.device, dtype=x.dtype)
+    blend = state.anchor_user_blend
+    return x * blend + anchor * (1.0 - blend) if blend > 0.0 else anchor
+
+
+def _collect_artist_outputs(original_forward, layer_idx, state, x, context, rope_emb, transformer_options, active, progress):
+    query_x = _anchor_query_x(state, layer_idx, x, progress)
+    if state.batched and len(active) > 1 and not state.batched_disabled:
+        try:
+            return _artist_outputs_batched(
+                original_forward,
+                query_x,
+                context,
+                rope_emb,
+                transformer_options,
+                active,
+                state.fusion_mode,
+            )
+        except Exception as exc:
+            if _should_reraise(exc):
+                raise
+            logger.warning("Anima artist mixer batched path failed, using serial artist forwards: %s", exc)
+            state.batched_disabled = True
+
+    outputs = []
+    for artist, _ in active:
+        artist_context = _to_context_like(artist.cond, context)
+        kv = _concat_contexts(context, artist_context) if state.fusion_mode in BASE_CONTEXT_FUSIONS else artist_context
+        outputs.append(original_forward(query_x, context=kv, rope_emb=rope_emb, transformer_options=transformer_options))
+    return outputs
+
+
+def _static_capture_outputs(state, layer_idx, progress, signature, x, context, collect):
+    if not state.artist_static_capture or state.fusion_mode == FUSION_CONCAT_WITH_BASE:
+        return collect()
+    if progress is None:
+        if not state.warned_static_no_progress:
+            logger.warning("Anima artist mixer cannot resolve sampling progress; Static Capture is disabled for this run.")
+            state.warned_static_no_progress = True
+        return collect()
+    if not _stabilizer_active(state, progress):
+        return collect()
+
+    key = (layer_idx, signature, _tensor_fingerprint(context), tuple(x.shape))
+    entry = state.static_cache.get(key)
+    if entry is None:
+        entry = {"steps": set(), "sum": None, "count": 0, "frozen": None}
+        state.static_cache[key] = entry
+    if entry["frozen"] is not None:
+        return [value.to(device=context.device, dtype=context.dtype) for value in entry["frozen"]]
+
+    step_key = round(float(progress), 6)
+    if step_key not in entry["steps"]:
+        outputs = collect()
+        if entry["sum"] is None:
+            entry["sum"] = [value.detach().to(torch.float32) for value in outputs]
+        else:
+            for index, value in enumerate(outputs):
+                entry["sum"][index] = entry["sum"][index] + value.detach().to(torch.float32)
+        entry["steps"].add(step_key)
+        entry["count"] += 1
+        if entry["count"] >= state.static_capture_k:
+            inv = 1.0 / entry["count"]
+            entry["frozen"] = [(value * inv).to(context.dtype).detach() for value in entry["sum"]]
+            entry["sum"] = None
+            entry["steps"] = None
+            return [value.to(device=context.device, dtype=context.dtype) for value in entry["frozen"]]
+
+    if entry["sum"] is None or entry["count"] <= 0:
+        return collect()
+    inv = 1.0 / entry["count"]
+    return [(value * inv).to(device=context.device, dtype=context.dtype) for value in entry["sum"]]
+
+
+def _balance_artist_outputs(outputs, base_out, strength):
+    if strength <= 0.0 or len(outputs) < 2:
+        return outputs
+    base_f32 = base_out.to(torch.float32)
+    deltas = torch.stack([(value - base_out).to(torch.float32) for value in outputs], dim=0)
+    flat = deltas.reshape(deltas.shape[0], deltas.shape[1], -1)
+    norms = torch.linalg.vector_norm(flat, dim=-1).clamp(min=1e-8)
+    target = norms.mean(dim=0, keepdim=True)
+    scale = (target / norms).clamp(min=0.5, max=2.0)
+    scale = scale.view(deltas.shape[0], deltas.shape[1], *([1] * (deltas.dim() - 2)))
+    balanced = deltas * (1.0 - strength) + deltas * scale * strength
+    return [(base_f32 + balanced[index]).to(outputs[index]) for index in range(len(outputs))]
+
+
+def _combine_lowrank_outputs(outputs, weights, base_out, rank, state):
+    count = len(outputs)
+    deltas = torch.stack(outputs, dim=0).to(torch.float32) - base_out.to(torch.float32).unsqueeze(0)
+    shape = deltas.shape
+    rows = deltas.reshape(count, -1)
+    if rank < count:
+        try:
+            rows = _lowrank_rows(rows, rank)
+        except Exception as exc:
+            if _should_reraise(exc):
+                raise
+            if not state.warned_lowrank:
+                logger.warning("Anima artist mixer low-rank constraint failed; using output average: %s", exc)
+                state.warned_lowrank = True
+    weight_tensor = torch.tensor(weights, device=rows.device, dtype=rows.dtype).view(count, 1)
+    delta = (rows * weight_tensor).sum(dim=0).reshape(shape[1:]).to(base_out.dtype)
+    return base_out + delta
+
+
+def _apply_ema(state, layer_idx, progress, signature, artist_out):
+    alpha = state.artist_ema_alpha
+    if alpha <= 0.0 or state.artist_static_capture:
+        return artist_out
+    if progress is None:
+        if not state.warned_ema_no_progress:
+            logger.warning("Anima artist mixer cannot resolve sampling progress; EMA is disabled for this run.")
+            state.warned_ema_no_progress = True
+        return artist_out
+    if not _stabilizer_active(state, progress):
+        return artist_out
+    key = (layer_idx, signature, tuple(artist_out.shape))
+    previous = state.ema_cache.get(key)
+    if previous is not None and previous.shape == artist_out.shape:
+        artist_out = previous.to(artist_out) * alpha + artist_out * (1.0 - alpha)
+    state.ema_cache[key] = artist_out.detach()
+    return artist_out
+
+
+def _blend_artist_output(state, base_out, artist_out, mask, strength):
+    if state.fusion_mode == FUSION_QUALITY_DELTA:
+        guarded = _norm_limited_delta(base_out, artist_out, 1.0)
+        delta = guarded - base_out
+    else:
+        delta = artist_out - base_out
+    if state.structure_preserve > 0.0:
+        perpendicular = _project_perpendicular(delta, base_out)
+        delta = delta * (1.0 - state.structure_preserve) + perpendicular * state.structure_preserve
+    cap = state.delta_norm_cap
+    if cap > 0.0:
+        delta = _limit_delta_norm(delta, base_out, cap)
+    blended = base_out + delta * float(strength)
+    row_mask = torch.tensor(mask, device=base_out.device, dtype=torch.bool).view(len(mask), *([1] * (base_out.dim() - 1)))
+    return torch.where(row_mask, blended, base_out)
 
 
 def _norm_limited_delta(base_out, artist_out, strength, max_ratio=0.6):
@@ -2008,12 +2498,17 @@ def _norm_limited_delta(base_out, artist_out, strength, max_ratio=0.6):
     return base_out + delta * scale.to(device=delta.device, dtype=delta.dtype).view(*shape) * float(strength)
 
 
-def _dispatch_cross_attn(original_forward, layer_idx, state, x, context=None, rope_emb=None, transformer_options={}):
+def _dispatch_cross_attn(original_forward, layer_idx, state, x, context=None, rope_emb=None, transformer_options=None):
+    transformer_options = transformer_options or {}
+    if state.in_anchor_run:
+        state.anchor_capture[layer_idx] = x.detach().clone()
+        return original_forward(x, context=context, rope_emb=rope_emb, transformer_options=transformer_options)
     state.dispatch_calls += 1
     if not state.enabled or context is None or not state.artists:
         state.fallback_calls += 1
         return original_forward(x, context=context, rope_emb=rope_emb, transformer_options=transformer_options)
     progress = _current_progress(transformer_options, state)
+    state.current_layer = layer_idx
     active = _active_artists(state, layer_idx, progress)
     if not active:
         state.fallback_calls += 1
@@ -2024,6 +2519,8 @@ def _dispatch_cross_attn(original_forward, layer_idx, state, x, context=None, ro
             return _dispatch_concat(original_forward, state, x, context, rope_emb, transformer_options, active)
         return _dispatch_output_avg(original_forward, state, x, context, rope_emb, transformer_options, active)
     except Exception as exc:
+        if _should_reraise(exc):
+            raise
         state.fallback_calls += 1
         logger.exception("Anima artist mixer failed at block %s, falling back to original cross-attn: %s", layer_idx, exc)
         return original_forward(x, context=context, rope_emb=rope_emb, transformer_options=transformer_options)
@@ -2034,56 +2531,51 @@ def _dispatch_output_avg(original_forward, state, x, context, rope_emb, transfor
     cou = transformer_options.get("cond_or_uncond") if isinstance(transformer_options, dict) else None
     if state.mask_probe is None:
         state.mask_probe = (len(cou) if cou is not None else -1, int(batch_size))
-    mask = _resolve_row_mask(
-        cou,
-        batch_size,
-        state.apply_uncond,
-    )
+    mask = _resolve_row_mask(cou, batch_size, state.apply_uncond)
     raw_weights = [float(weight) for _, weight in active]
     total_abs = sum(abs(w) for w in raw_weights)
     if total_abs <= 1e-8:
         return original_forward(x, context=context, rope_emb=rope_emb, transformer_options=transformer_options)
     total_influence = _clamp(total_abs, 0.0, 1.0)
-    denom = total_abs
-    weights = [w / denom for w in raw_weights]
-    artist_total = None
-    if state.batched and len(active) > 1 and not state.batched_disabled:
-        try:
-            artist_total = _artist_forward_batched(
-                original_forward,
-                x,
-                context,
-                rope_emb,
-                transformer_options,
-                active,
-                weights,
-                state.fusion_mode,
-            )
-        except Exception as exc:
-            logger.warning("Anima artist mixer batched path failed, using serial artist forwards: %s", exc)
-            state.batched_disabled = True
-            artist_total = None
-    if artist_total is None:
-        for (artist, _), weight in zip(active, weights):
-            artist_context = _to_context_like(artist.cond, context)
-            kv = _concat_contexts(context, artist_context) if state.fusion_mode in BASE_CONTEXT_FUSIONS else artist_context
-            out_i = original_forward(x, context=kv, rope_emb=rope_emb, transformer_options=transformer_options)
-            artist_total = out_i * weight if artist_total is None else artist_total + out_i * weight
-    strength = _clamp(float(state.global_strength), 0.0, 1.0 if state.fusion_mode == FUSION_QUALITY_DELTA else 2.0) * total_influence
+    weights = [weight / total_abs for weight in raw_weights]
+    progress = state.current_progress
+    signature = _active_signature(active)
+    outputs = _static_capture_outputs(
+        state,
+        getattr(state, "current_layer", -1),
+        progress,
+        signature,
+        x,
+        context,
+        lambda: _collect_artist_outputs(
+            original_forward,
+            getattr(state, "current_layer", -1),
+            state,
+            x,
+            context,
+            rope_emb,
+            transformer_options,
+            active,
+            progress,
+        ),
+    )
     base_out = original_forward(x, context=context, rope_emb=rope_emb, transformer_options=transformer_options)
+    outputs = _balance_artist_outputs(outputs, base_out, state.style_balance)
+    if state.combine_mode == COMBINE_LOWRANK_AVG and len(outputs) > 1:
+        artist_total = _combine_lowrank_outputs(outputs, weights, base_out, state.lowrank_k, state)
+    else:
+        artist_total = None
+        for output, weight in zip(outputs, weights):
+            artist_total = output * weight if artist_total is None else artist_total + output * weight
+    artist_total = _apply_ema(state, getattr(state, "current_layer", -1), progress, signature, artist_total)
+    strength_limit = 1.0 if state.fusion_mode == FUSION_QUALITY_DELTA else 2.0
+    strength = _clamp(float(state.global_strength), 0.0, strength_limit) * total_influence
     if state.diff_probe is None:
         with torch.no_grad():
             delta_norm = (artist_total - base_out).detach().float().flatten(1).norm(dim=1).mean().item()
             base_norm = base_out.detach().float().flatten(1).norm(dim=1).mean().clamp_min(1e-6).item()
             state.diff_probe = (float(delta_norm), float(delta_norm / base_norm))
-    out = base_out.clone()
-    for idx, hit in enumerate(mask):
-        if hit:
-            if state.fusion_mode == FUSION_QUALITY_DELTA:
-                out[idx] = _norm_limited_delta(base_out[idx : idx + 1], artist_total[idx : idx + 1], strength)[0]
-            else:
-                out[idx] = base_out[idx] * (1.0 - strength) + artist_total[idx] * strength
-    return out
+    return _blend_artist_output(state, base_out, artist_total, mask, strength)
 
 
 def _dispatch_concat(original_forward, state, x, context, rope_emb, transformer_options, active):
@@ -2091,42 +2583,40 @@ def _dispatch_concat(original_forward, state, x, context, rope_emb, transformer_
     cou = transformer_options.get("cond_or_uncond") if isinstance(transformer_options, dict) else None
     if state.mask_probe is None:
         state.mask_probe = (len(cou) if cou is not None else -1, int(batch_size))
-    mask = _resolve_row_mask(
-        cou,
-        batch_size,
-        state.apply_uncond,
-    )
+    mask = _resolve_row_mask(cou, batch_size, state.apply_uncond)
     raw_weights = [float(weight) for _, weight in active]
     total_abs = sum(abs(w) for w in raw_weights)
     if total_abs <= 1e-8:
         return original_forward(x, context=context, rope_emb=rope_emb, transformer_options=transformer_options)
     total_influence = _clamp(total_abs, 0.0, 1.0)
-    denom = total_abs
     parts = []
     for artist, weight in active:
         artist_context = _to_context_like(artist.cond, context)
-        parts.append(artist_context * (weight / denom))
+        parts.append(artist_context * (weight / total_abs))
     combined = torch.cat(parts, dim=_context_token_dim(context))
-    if state.fusion_mode in BASE_CONTEXT_FUSIONS:
-        merged = _concat_contexts(context, combined)
-        artist_out = original_forward(x, context=merged, rope_emb=rope_emb, transformer_options=transformer_options)
-    else:
-        artist_out = original_forward(x, context=combined, rope_emb=rope_emb, transformer_options=transformer_options)
-    strength = _clamp(float(state.global_strength), 0.0, 1.0 if state.fusion_mode == FUSION_QUALITY_DELTA else 2.0) * total_influence
+    artist_context = _concat_contexts(context, combined) if state.fusion_mode in BASE_CONTEXT_FUSIONS else combined
+    progress = state.current_progress
+    signature = ("concat", _active_signature(active))
+    query_x = _anchor_query_x(state, state.current_layer, x, progress)
+    artist_out = _static_capture_outputs(
+        state,
+        state.current_layer,
+        progress,
+        signature,
+        x,
+        context,
+        lambda: [original_forward(query_x, context=artist_context, rope_emb=rope_emb, transformer_options=transformer_options)],
+    )[0]
+    artist_out = _apply_ema(state, state.current_layer, progress, signature, artist_out)
+    strength_limit = 1.0 if state.fusion_mode == FUSION_QUALITY_DELTA else 2.0
+    strength = _clamp(float(state.global_strength), 0.0, strength_limit) * total_influence
     base_out = original_forward(x, context=context, rope_emb=rope_emb, transformer_options=transformer_options)
     if state.diff_probe is None:
         with torch.no_grad():
             delta_norm = (artist_out - base_out).detach().float().flatten(1).norm(dim=1).mean().item()
             base_norm = base_out.detach().float().flatten(1).norm(dim=1).mean().clamp_min(1e-6).item()
             state.diff_probe = (float(delta_norm), float(delta_norm / base_norm))
-    out = base_out.clone()
-    for idx, hit in enumerate(mask):
-        if hit:
-            if state.fusion_mode == FUSION_QUALITY_DELTA:
-                out[idx] = _norm_limited_delta(base_out[idx : idx + 1], artist_out[idx : idx + 1], strength)[0]
-            else:
-                out[idx] = base_out[idx] * (1.0 - strength) + artist_out[idx] * strength
-    return out
+    return _blend_artist_output(state, base_out, artist_out, mask, strength)
 
 
 def _current_prompts(p):
@@ -2253,6 +2743,44 @@ class Script(scripts.Script):
                 hires_artist_table_label = gr.Markdown(value=f"**{_t('artist_table')}**")
                 hires_row_components = _create_artist_row_controls("hires", lang, defaults["hires_rows"], self.elem_id)
 
+            advanced_defaults = defaults["advanced"]
+            with gr.Tab(_t("advanced_tab")):
+                advanced_hint = gr.Markdown(value=_t("advanced_hint"))
+                with gr.Row():
+                    artist_ema_alpha = gr.Slider(label=_t("artist_ema_alpha"), minimum=0.0, maximum=0.95, step=0.05, value=advanced_defaults["artist_ema_alpha"], elem_id=self.elem_id("artist_ema_alpha"))
+                    lowrank_k = gr.Slider(label=_t("lowrank_k"), minimum=1, maximum=MAX_ARTIST_ROWS, step=1, value=advanced_defaults["lowrank_k"], elem_id=self.elem_id("lowrank_k"))
+                    stabilizer_end_percent = gr.Slider(label=_t("stabilizer_end_percent"), minimum=0.0, maximum=1.0, step=0.05, value=advanced_defaults["stabilizer_end_percent"], elem_id=self.elem_id("stabilizer_end_percent"))
+                with gr.Row():
+                    artist_static_capture = gr.Checkbox(label=_t("artist_static_capture"), value=advanced_defaults["artist_static_capture"], elem_id=self.elem_id("artist_static_capture"))
+                    static_capture_k = gr.Slider(label=_t("static_capture_k"), minimum=1, maximum=STATIC_CAPTURE_K_MAX, step=1, value=advanced_defaults["static_capture_k"], elem_id=self.elem_id("static_capture_k"))
+                with gr.Row():
+                    artist_anchor_q = gr.Checkbox(label=_t("artist_anchor_q"), value=advanced_defaults["artist_anchor_q"], elem_id=self.elem_id("artist_anchor_q"))
+                    anchor_seed_list = gr.Textbox(label=_t("anchor_seed_list"), value=advanced_defaults["anchor_seed_list"], lines=1, elem_id=self.elem_id("anchor_seed_list"))
+                    anchor_seeds_count = gr.Slider(label=_t("anchor_seeds_count"), minimum=1, maximum=ANCHOR_SEEDS_MAX, step=1, value=advanced_defaults["anchor_seeds_count"], elem_id=self.elem_id("anchor_seeds_count"))
+                with gr.Row():
+                    anchor_user_blend = gr.Slider(label=_t("anchor_user_blend"), minimum=0.0, maximum=1.0, step=0.05, value=advanced_defaults["anchor_user_blend"], elem_id=self.elem_id("anchor_user_blend"))
+                    anchor_deep_layer_threshold = gr.Number(label=_t("anchor_deep_layer_threshold"), value=advanced_defaults["anchor_deep_layer_threshold"], precision=0, elem_id=self.elem_id("anchor_deep_layer_threshold"))
+                with gr.Row():
+                    style_balance = gr.Slider(label=_t("style_balance"), minimum=0.0, maximum=1.0, step=0.05, value=advanced_defaults["style_balance"], elem_id=self.elem_id("style_balance"))
+                    structure_preserve = gr.Slider(label=_t("structure_preserve"), minimum=0.0, maximum=1.0, step=0.05, value=advanced_defaults["structure_preserve"], elem_id=self.elem_id("structure_preserve"))
+                    delta_norm_cap = gr.Slider(label=_t("delta_norm_cap"), minimum=0.0, maximum=4.0, step=0.05, value=advanced_defaults["delta_norm_cap"], elem_id=self.elem_id("delta_norm_cap"))
+
+            advanced_components = [
+                artist_ema_alpha,
+                lowrank_k,
+                artist_static_capture,
+                static_capture_k,
+                artist_anchor_q,
+                anchor_seed_list,
+                anchor_seeds_count,
+                anchor_user_blend,
+                anchor_deep_layer_threshold,
+                stabilizer_end_percent,
+                style_balance,
+                structure_preserve,
+                delta_norm_cap,
+            ]
+
             with gr.Tab(_t("template")):
                 with gr.Row():
                     template_choices = _template_choices()
@@ -2302,6 +2830,20 @@ class Script(scripts.Script):
                 gr.update(label=labels["combine"], choices=_option_choices("combine", language_code), value=_option_label("combine", combine_value, language_code)),
                 gr.update(label=labels["fusion"], choices=_option_choices("fusion", language_code), value=_option_label("fusion", fusion_value, language_code)),
                 gr.update(label=labels["apply_uncond"]),
+                gr.update(value=labels["advanced_hint"]),
+                gr.update(label=labels["artist_ema_alpha"]),
+                gr.update(label=labels["lowrank_k"]),
+                gr.update(label=labels["artist_static_capture"]),
+                gr.update(label=labels["static_capture_k"]),
+                gr.update(label=labels["artist_anchor_q"]),
+                gr.update(label=labels["anchor_seed_list"]),
+                gr.update(label=labels["anchor_seeds_count"]),
+                gr.update(label=labels["anchor_user_blend"]),
+                gr.update(label=labels["anchor_deep_layer_threshold"]),
+                gr.update(label=labels["stabilizer_end_percent"]),
+                gr.update(label=labels["style_balance"]),
+                gr.update(label=labels["structure_preserve"]),
+                gr.update(label=labels["delta_norm_cap"]),
                 gr.update(label=labels["row_count"]),
                 gr.update(value=labels["normalize_rows"]),
                 gr.update(value=labels["shift_runtime_hint"]),
@@ -2361,6 +2903,8 @@ class Script(scripts.Script):
                 combine_mode,
                 fusion_mode,
                 apply_uncond,
+                advanced_hint,
+                *advanced_components,
                 base_row_count,
                 base_apply_presets,
                 base_shift_hint,
@@ -2497,6 +3041,7 @@ class Script(scripts.Script):
                 fusion_mode,
                 apply_uncond,
                 enable_cache,
+                *advanced_components,
                 *base_row_components,
             ],
             outputs=[template_dropdown, template_status],
@@ -2518,6 +3063,7 @@ class Script(scripts.Script):
                 fusion_mode,
                 apply_uncond,
                 enable_cache,
+                *advanced_components,
                 *hires_row_components,
             ],
             outputs=[template_dropdown, template_status],
@@ -2529,7 +3075,7 @@ class Script(scripts.Script):
         delete_button.click(fn=_delete_template_ui, inputs=[template_dropdown], outputs=[template_dropdown, template_status], queue=False, show_progress=False, **_internal_event_kwargs())
         template_apply.click(
             fn=_apply_template_ui,
-            inputs=[template_dropdown, template_apply_target, base_row_count, hires_row_count, runtime_base_shift, runtime_hires_shift, optimization, *base_row_components, *hires_row_components],
+            inputs=[template_dropdown, template_apply_target, base_row_count, hires_row_count, runtime_base_shift, runtime_hires_shift, optimization, *advanced_components, *base_row_components, *hires_row_components],
             outputs=[
                 base_row_count,
                 hires_row_count,
@@ -2543,6 +3089,7 @@ class Script(scripts.Script):
                 fusion_mode,
                 apply_uncond,
                 enable_cache,
+                *advanced_components,
                 template_status,
                 *base_row_components,
                 *hires_row_components,
@@ -2570,6 +3117,7 @@ class Script(scripts.Script):
                 fusion_mode,
                 apply_uncond,
                 enable_cache,
+                *advanced_components,
                 template_status,
                 *base_row_components,
                 *hires_row_components,
@@ -2594,6 +3142,7 @@ class Script(scripts.Script):
             fusion_mode,
             apply_uncond,
             enable_cache,
+            *advanced_components,
             *base_row_components,
             *hires_row_components,
         ]
@@ -2621,13 +3170,16 @@ class Script(scripts.Script):
             fusion_mode,
             apply_uncond,
             enable_cache,
+            *advanced_components,
             *base_row_components,
             *hires_row_components,
         ]
 
     def process_before_every_sampling(self, p, *args, **kwargs):
         global _ACTIVE_STATE
-        if len(args) < 13:
+        base_arg_count = 13
+        advanced_arg_count = len(ADVANCED_SETTING_KEYS)
+        if len(args) < base_arg_count + advanced_arg_count:
             return
         (
             enable,
@@ -2643,8 +3195,10 @@ class Script(scripts.Script):
             fusion_mode,
             apply_uncond,
             enable_cache,
-        ) = args[:13]
-        component_values = args[13:]
+        ) = args[:base_arg_count]
+        advanced_values = args[base_arg_count : base_arg_count + advanced_arg_count]
+        advanced = _advanced_settings_from_values(advanced_values)
+        component_values = args[base_arg_count + advanced_arg_count :]
         base_values = component_values[: MAX_ARTIST_ROWS * 10]
         hires_values = component_values[MAX_ARTIST_ROWS * 10 : MAX_ARTIST_ROWS * 20]
         _save_runtime_current_settings(
@@ -2661,6 +3215,7 @@ class Script(scripts.Script):
             fusion_mode,
             apply_uncond,
             enable_cache,
+            *advanced_values,
             *component_values,
         )
 
@@ -2688,6 +3243,12 @@ class Script(scripts.Script):
         optimization = _option_key("optimization", optimization, OPT_BALANCE)
         combine_mode = _option_key("combine", combine_mode, COMBINE_OUTPUT_AVG)
         fusion_mode = _option_key("fusion", fusion_mode, FUSION_INTERPOLATE)
+        if advanced["artist_anchor_q"] and advanced["artist_static_capture"]:
+            logger.warning("Anima artist mixer Anchor Q and Static Capture were both enabled; Static Capture is disabled for this run.")
+            advanced["artist_static_capture"] = False
+        if advanced["artist_anchor_q"] and fusion_mode == FUSION_CONCAT_WITH_BASE:
+            logger.warning("Anima artist mixer Anchor Q is incompatible with concat-with-base fusion and was disabled for this run.")
+            advanced["artist_anchor_q"] = False
         try:
             artists = _build_artists(p, rows, len(dm.blocks), shift, optimization, bool(enable_cache))
         except Exception as exc:
@@ -2709,6 +3270,20 @@ class Script(scripts.Script):
             fusion_mode=fusion_mode,
             apply_uncond=bool(apply_uncond),
             batched=bool(defaults["batched"]),
+            artist_ema_alpha=advanced["artist_ema_alpha"],
+            lowrank_k=advanced["lowrank_k"],
+            artist_static_capture=advanced["artist_static_capture"],
+            static_capture_k=advanced["static_capture_k"],
+            artist_anchor_q=advanced["artist_anchor_q"],
+            anchor_seed_list=_parse_anchor_seed_list(advanced["anchor_seed_list"]),
+            anchor_seeds_count=advanced["anchor_seeds_count"],
+            anchor_user_blend=advanced["anchor_user_blend"],
+            anchor_deep_layer_threshold=advanced["anchor_deep_layer_threshold"],
+            stabilizer_end_percent=advanced["stabilizer_end_percent"],
+            style_balance=advanced["style_balance"],
+            structure_preserve=advanced["structure_preserve"],
+            delta_norm_cap=advanced["delta_norm_cap"],
+            dm_ref=dm,
             artists=artists,
         )
         previous_states = list(_RUN_STATES)

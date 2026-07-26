@@ -21,6 +21,20 @@ Special thanks to **An1X3R/Anima-Artist-Mixer** and **汐浮尘/utowo** for the 
 - English/Chinese UI setting at the top of the panel; switching it refreshes only this plugin panel.
 - Text-encoding cache for repeated prompts and artist rows.
 - Reference-style `Output average + Interpolate` by default, with `Quality-safe delta` still available for a steadier, more conservative blend.
+- Advanced stability tab with EMA, low-rank constraint, Static Capture, Anchor Q, Style Balance, and Structure Guard.
+
+## Advanced Stability
+
+These controls are disabled by default, so existing configurations keep their previous behavior. They operate on artist cross-attention branches during sampling and do not modify model files.
+
+- `EMA` smooths artist outputs across sampling steps to reduce step-to-step jitter. Start with `EMA smoothing strength` at `0.25-0.50`.
+- `Low-rank constraint` is exposed as the `Low-rank average` combine mode. It projects multiple artist deltas into a rank-K subspace to reduce cross-seed drift. Start with rank `1-2`; raise it only for larger artist sets.
+- `Static Capture` averages artist outputs from the first K distinct sampling steps and freezes the result. Start with `4-6` warmup steps; it adds early compute and VRAM use.
+- `Anchor Q` runs a fixed-seed pre-pass, captures cross-attention query hidden states, and replaces queries only on artist branches. Up to four fixed seeds can be entered. With `Anchor/current Q blend` at `0`, the artist branch uses the Anchor fully; start around `0.15-0.35`. Anchor Q adds a pre-pass cost.
+- `Style Balance` gently equalizes artist-delta norms before row weights are applied, preventing a high-amplitude artist from dominating. Start with `0.25-0.50`.
+- `Structure Guard` projects the final artist delta away from the base-output direction and can cap its magnitude relative to the base output. Start with `Structure preservation` at `0.20-0.40`, then optionally use a `Delta cap` around `0.20-0.50` for stronger protection.
+
+`Stabilizer end progress` limits EMA, Static Capture, and Anchor Q to the early part of sampling. Anchor Q takes priority over Static Capture when both are enabled; Anchor Q is disabled automatically with `Concat with base` fusion because that path changes the query/context contract. Combining more stabilizers increases compute and VRAM use, so add them one at a time while comparing results.
 
 ## Row Controls
 

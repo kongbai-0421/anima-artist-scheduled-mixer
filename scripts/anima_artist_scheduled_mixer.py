@@ -11,6 +11,7 @@ import gradio as gr
 import torch
 
 from modules import script_callbacks, scripts, shared
+from modules.prompt_parser import SdConditioning
 
 
 logger = logging.getLogger("anima_artist_scheduled_mixer")
@@ -1818,7 +1819,12 @@ def _encode_text_batch(p, texts, use_cache=True):
     if use_cache and key in _COND_CACHE:
         _COND_CACHE.move_to_end(key)
         return _COND_CACHE[key]
-    conds = p.sd_model.get_learned_conditioning(list(texts))
+    # Anima's conditioning API expects SdConditioning metadata (in
+    # particular ``is_negative_prompt``), while older diffusion engines only
+    # require a list of strings. SdConditioning subclasses list, so it keeps
+    # the old call contract and works across both APIs.
+    prompt_batch = SdConditioning(list(texts), is_negative_prompt=False)
+    conds = p.sd_model.get_learned_conditioning(prompt_batch)
     tensors = []
     if torch.is_tensor(conds):
         conds = list(conds)
